@@ -98,3 +98,38 @@ CREATE INDEX IF NOT EXISTS idx_menu_items_category ON menu_items(category_id);
 CREATE INDEX IF NOT EXISTS idx_photos_restaurant ON photos(restaurant_id);
 CREATE INDEX IF NOT EXISTS idx_materials_restaurant ON generated_materials(restaurant_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_restaurant ON processing_jobs(restaurant_id);
+
+-- Shorts processing jobs
+CREATE TABLE IF NOT EXISTS shorts_jobs (
+  id TEXT PRIMARY KEY,
+  video_path TEXT NOT NULL,
+  status TEXT DEFAULT 'pending', -- 'pending', 'processing', 'ready', 'uploaded', 'failed'
+  progress INTEGER DEFAULT 0,
+  progress_stage TEXT, -- 'analyzing', 'clip_extracted', 'script_ready', 'voiceover_done', 'audio_mixed', 'ready'
+  error_message TEXT,
+
+  -- Clip selection results
+  clip_start REAL, -- Start time in seconds
+  clip_end REAL, -- End time in seconds
+  clip_path TEXT, -- Extracted clip path
+
+  -- Voiceover results
+  script TEXT, -- Generated voiceover script
+  voiceover_path TEXT, -- Generated audio path
+
+  -- Final output
+  output_path TEXT, -- Final shorts-format video
+  thumbnail_path TEXT,
+
+  -- YouTube metadata
+  title TEXT,
+  description TEXT,
+  tags_json TEXT, -- JSON array of tags
+  youtube_video_id TEXT, -- After upload
+  youtube_url TEXT,
+
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_shorts_jobs_status ON shorts_jobs(status);

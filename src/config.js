@@ -17,8 +17,15 @@ export const config = {
     websites: join(__dirname, '..', 'output', 'websites'),
     brochures: join(__dirname, '..', 'output', 'brochures'),
     images: join(__dirname, '..', 'output', 'images'),
+    shorts: join(__dirname, '..', 'output', 'shorts'),
     public: join(__dirname, '..', 'public'),
     db: join(__dirname, '..', 'data')
+  },
+
+  youtube: {
+    clientId: process.env.YOUTUBE_CLIENT_ID,
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET,
+    redirectUri: process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3000/api/youtube/callback'
   },
 
   geminiLive: {
