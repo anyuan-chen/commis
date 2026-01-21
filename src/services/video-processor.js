@@ -162,4 +162,160 @@ export class VideoProcessor {
         .run();
     });
   }
+
+  /**
+   * Extract a clip from video between start and end times
+   * @param {string} videoPath - Path to source video
+   * @param {number} startTime - Start time in seconds
+   * @param {number} endTime - End time in seconds
+   * @param {string} outputPath - Path for output clip
+   * @returns {Promise<string>} - Path to extracted clip
+   */
+  static async extractClip(videoPath, startTime, endTime, outputPath) {
+    const duration = endTime - startTime;
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .setStartTime(startTime)
+        .setDuration(duration)
+        .outputOptions([
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-preset', 'fast',
+          '-crf', '23'
+        ])
+        .output(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => reject(new Error(`Clip extraction failed: ${err.message}`)))
+        .run();
+    });
+  }
+
+  /**
+   * Mix original video audio with voiceover audio
+   * @param {string} videoPath - Path to video file
+   * @param {string} voiceoverPath - Path to voiceover audio file
+   * @param {string} outputPath - Path for output video
+   * @param {object} options - Mix options
+   * @returns {Promise<string>} - Path to mixed video
+   */
+  static async mixAudioTracks(videoPath, voiceoverPath, outputPath, options = {}) {
+    const {
+      originalVolume = 0.3, // Reduce original to 30%
+      voiceoverVolume = 1.0 // Voiceover at full volume
+    } = options;
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .input(voiceoverPath)
+        .complexFilter([
+          // Extract and lower original audio
+          `[0:a]volume=${originalVolume}[a0]`,
+          // Set voiceover volume
+          `[1:a]volume=${voiceoverVolume}[a1]`,
+          // Mix the two audio streams
+          '[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[aout]'
+        ])
+        .outputOptions([
+          '-map', '0:v', // Video from first input
+          '-map', '[aout]', // Mixed audio
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-preset', 'fast',
+          '-crf', '23',
+          '-shortest'
+        ])
+        .output(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => reject(new Error(`Audio mixing failed: ${err.message}`)))
+        .run();
+    });
+  }
+
+  /**
+   * Convert video to YouTube Shorts format (9:16 aspect ratio, 1080x1920)
+   * @param {string} inputPath - Path to input video
+   * @param {string} outputPath - Path for output video
+   * @param {object} options - Conversion options
+   * @returns {Promise<string>} - Path to converted video
+   */
+  static async convertToShortsFormat(inputPath, outputPath, options = {}) {
+    const {
+      width = 1080,
+      height = 1920,
+      method = 'crop' // 'crop' or 'pad'
+    } = options;
+
+    // Video filter for 9:16 aspect ratio
+    // crop: crops the center of the video to fit
+    // pad: adds black bars to fit
+    const videoFilter = method === 'crop'
+      ? `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`
+      : `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`;
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .outputOptions([
+          '-vf', videoFilter,
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-preset', 'fast',
+          '-crf', '23',
+          '-r', '30' // 30fps for smooth playback
+        ])
+        .output(outputPath)
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => reject(new Error(`Shorts format conversion failed: ${err.message}`)))
+        .run();
+    });
+  }
+
+  /**
+   * Extract frames at 1-second intervals for clip analysis
+   * @param {string} videoPath - Path to video file
+   * @param {object} options - Extraction options
+   * @returns {Promise<{paths: string[], timestamps: number[]}>}
+   */
+  static async extractFramesForAnalysis(videoPath, options = {}) {
+    const {
+      interval = 1, // 1 second intervals
+      outputDir = null
+    } = options;
+
+    const framesDir = outputDir || join(config.paths.images, uuidv4());
+    await fs.mkdir(framesDir, { recursive: true });
+
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(videoPath, async (err, metadata) => {
+        if (err) {
+          reject(new Error(`Failed to probe video: ${err.message}`));
+          return;
+        }
+
+        const duration = metadata.format.duration;
+
+        ffmpeg(videoPath)
+          .outputOptions([
+            `-vf fps=1/${interval}`,
+            '-q:v', '2' // High quality JPEG
+          ])
+          .output(join(framesDir, 'frame_%04d.jpg'))
+          .on('end', async () => {
+            const files = await fs.readdir(framesDir);
+            const framePaths = files
+              .filter(f => f.startsWith('frame_') && f.endsWith('.jpg'))
+              .sort();
+
+            const timestamps = framePaths.map((_, i) => i * interval);
+            const paths = framePaths.map(f => join(framesDir, f));
+
+            resolve({ paths, timestamps, duration });
+          })
+          .on('error', (err) => {
+            reject(new Error(`Frame extraction failed: ${err.message}`));
+          })
+          .run();
+      });
+    });
+  }
 }
