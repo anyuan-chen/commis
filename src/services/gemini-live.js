@@ -452,5 +452,87 @@ export const voiceTools = [
       },
       required: ['searchText']
     }
+  },
+  {
+    name: 'generateSocialGraphic',
+    description: 'Generate a social media graphic/post image for the restaurant',
+    parameters: {
+      type: 'object',
+      properties: {
+        platform: {
+          type: 'string',
+          enum: ['instagram', 'facebook', 'twitter', 'story'],
+          description: 'Social media platform (affects aspect ratio)'
+        },
+        theme: {
+          type: 'string',
+          enum: ['promotion', 'announcement', 'menu-highlight', 'holiday'],
+          description: 'Type of post'
+        },
+        customText: {
+          type: 'string',
+          description: 'Custom text to include in the graphic'
+        }
+      },
+      required: ['platform']
+    }
+  },
+  {
+    name: 'generatePromoGraphic',
+    description: 'Generate a promotional flyer or graphic for a special offer or event',
+    parameters: {
+      type: 'object',
+      properties: {
+        promoText: {
+          type: 'string',
+          description: 'The promotion text, e.g., "20% off this weekend!"'
+        },
+        eventName: {
+          type: 'string',
+          description: 'Name of event if applicable, e.g., "Wine Wednesday"'
+        },
+        date: {
+          type: 'string',
+          description: 'Date of the event/promotion'
+        }
+      }
+    }
+  },
+  {
+    name: 'generateHolidayGraphic',
+    description: 'Generate a holiday or seasonal graphic',
+    parameters: {
+      type: 'object',
+      properties: {
+        holiday: {
+          type: 'string',
+          enum: ['christmas', 'thanksgiving', 'valentines', 'newyear', 'halloween', 'easter', 'july4th'],
+          description: 'Which holiday'
+        },
+        message: {
+          type: 'string',
+          description: 'Custom holiday message to include'
+        }
+      },
+      required: ['holiday']
+    }
+  },
+  {
+    name: 'generateMenuGraphic',
+    description: 'Generate a visual menu graphic/image',
+    parameters: {
+      type: 'object',
+      properties: {
+        style: {
+          type: 'string',
+          enum: ['elegant', 'casual', 'bold', 'minimal'],
+          description: 'Design style for the menu'
+        },
+        category: {
+          type: 'string',
+          description: 'Specific menu category to feature, or omit for full menu'
+        }
+      }
+    }
   }
 ];

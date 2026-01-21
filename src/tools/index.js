@@ -9,6 +9,11 @@ export class ToolExecutor {
     this.websiteGenerator = null;
     this.brochureGenerator = null;
     this.cloudflareDeployer = null;
+    this.imageGenerator = null;
+  }
+
+  setImageGenerator(generator) {
+    this.imageGenerator = generator;
   }
 
   setWebsiteGenerator(generator) {
@@ -39,7 +44,11 @@ export class ToolExecutor {
       deployWebsite: () => this.deployWebsite(),
       getRestaurantInfo: () => this.getRestaurantInfo(),
       addNote: () => this.addNote(args),
-      removeNote: () => this.removeNote(args)
+      removeNote: () => this.removeNote(args),
+      generateSocialGraphic: () => this.generateSocialGraphic(args),
+      generatePromoGraphic: () => this.generatePromoGraphic(args),
+      generateHolidayGraphic: () => this.generateHolidayGraphic(args),
+      generateMenuGraphic: () => this.generateMenuGraphic(args)
     };
 
     const handler = handlers[toolName];
@@ -324,5 +333,107 @@ export class ToolExecutor {
       success: true,
       message: `Removed note: "${deleted.content}"`
     };
+  }
+
+  /**
+   * Generate social media graphic
+   */
+  async generateSocialGraphic({ platform = 'instagram', theme = 'promotion', customText }) {
+    if (!this.imageGenerator) {
+      return { success: false, error: 'Image generator not available' };
+    }
+
+    try {
+      const result = await this.imageGenerator.generateSocialPost(this.restaurantId, {
+        platform,
+        theme,
+        customText
+      });
+
+      return {
+        success: true,
+        message: `Generated ${platform} ${theme} graphic`,
+        path: result.path,
+        url: `/images/${result.path.split('/').pop()}`
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Generate promotional graphic
+   */
+  async generatePromoGraphic({ promoText, eventName, date }) {
+    if (!this.imageGenerator) {
+      return { success: false, error: 'Image generator not available' };
+    }
+
+    try {
+      const result = await this.imageGenerator.generatePromoGraphic(this.restaurantId, {
+        promoText,
+        eventName,
+        date
+      });
+
+      return {
+        success: true,
+        message: `Generated promo graphic${eventName ? ` for ${eventName}` : ''}`,
+        path: result.path,
+        url: `/images/${result.path.split('/').pop()}`
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Generate holiday graphic
+   */
+  async generateHolidayGraphic({ holiday, message }) {
+    if (!this.imageGenerator) {
+      return { success: false, error: 'Image generator not available' };
+    }
+
+    try {
+      const result = await this.imageGenerator.generateHolidayGraphic(this.restaurantId, {
+        holiday,
+        message
+      });
+
+      return {
+        success: true,
+        message: `Generated ${holiday} graphic`,
+        path: result.path,
+        url: `/images/${result.path.split('/').pop()}`
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Generate menu graphic
+   */
+  async generateMenuGraphic({ style = 'elegant', category }) {
+    if (!this.imageGenerator) {
+      return { success: false, error: 'Image generator not available' };
+    }
+
+    try {
+      const result = await this.imageGenerator.generateMenuGraphic(this.restaurantId, {
+        style,
+        category
+      });
+
+      return {
+        success: true,
+        message: `Generated ${style} menu graphic`,
+        path: result.path,
+        url: `/images/${result.path.split('/').pop()}`
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 }

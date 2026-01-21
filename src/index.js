@@ -9,6 +9,7 @@ import uploadRoutes from './routes/upload.js';
 import previewRoutes from './routes/preview.js';
 import deployRoutes from './routes/deploy.js';
 import downloadRoutes from './routes/download.js';
+import graphicsRoutes from './routes/graphics.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 
 // Create Express app
@@ -59,6 +60,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api', previewRoutes);
 app.use('/api/deploy', deployRoutes);
 app.use('/api/download', downloadRoutes);
+app.use('/api/graphics', graphicsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

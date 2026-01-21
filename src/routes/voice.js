@@ -5,6 +5,7 @@ import { ToolExecutor } from '../tools/index.js';
 import { WebsiteGenerator } from '../services/website-generator.js';
 import { BrochureGenerator } from '../services/brochure-generator.js';
 import { CloudflareDeployer } from '../services/cloudflare-deploy.js';
+import { ImageGenerator } from '../services/image-generator.js';
 
 /**
  * Setup WebSocket server for voice interactions
@@ -37,6 +38,7 @@ export function setupVoiceWebSocket(server) {
     toolExecutor.setWebsiteGenerator(new WebsiteGenerator());
     toolExecutor.setBrochureGenerator(new BrochureGenerator());
     toolExecutor.setCloudflareDeployer(new CloudflareDeployer());
+    toolExecutor.setImageGenerator(new ImageGenerator({ pro: false }));
 
     // Create Gemini Live client
     let geminiClient = null;
