@@ -7,7 +7,7 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 export class ClipSelector {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-3.0-flash-preview' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   }
 
   /**
