@@ -205,26 +205,44 @@ export class VideoProcessor {
       voiceoverVolume = 1.0 // Voiceover at full volume
     } = options;
 
+    // First check if video has audio
+    const metadata = await this.getMetadata(videoPath);
+
     return new Promise((resolve, reject) => {
-      ffmpeg(videoPath)
-        .input(voiceoverPath)
-        .complexFilter([
-          // Extract and lower original audio
-          `[0:a]volume=${originalVolume}[a0]`,
-          // Set voiceover volume
-          `[1:a]volume=${voiceoverVolume}[a1]`,
-          // Mix the two audio streams
-          '[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[aout]'
-        ])
-        .outputOptions([
-          '-map', '0:v', // Video from first input
-          '-map', '[aout]', // Mixed audio
-          '-c:v', 'libx264',
-          '-c:a', 'aac',
-          '-preset', 'fast',
-          '-crf', '23',
-          '-shortest'
-        ])
+      const command = ffmpeg(videoPath).input(voiceoverPath);
+
+      if (metadata.hasAudio) {
+        // Mix both audio tracks
+        command
+          .complexFilter([
+            `[0:a]volume=${originalVolume}[a0]`,
+            `[1:a]volume=${voiceoverVolume}[a1]`,
+            '[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[aout]'
+          ])
+          .outputOptions([
+            '-map', '0:v',
+            '-map', '[aout]',
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-shortest'
+          ]);
+      } else {
+        // No original audio, just use voiceover
+        command
+          .outputOptions([
+            '-map', '0:v',
+            '-map', '1:a',
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-preset', 'fast',
+            '-crf', '23',
+            '-shortest'
+          ]);
+      }
+
+      command
         .output(outputPath)
         .on('end', () => resolve(outputPath))
         .on('error', (err) => reject(new Error(`Audio mixing failed: ${err.message}`)))

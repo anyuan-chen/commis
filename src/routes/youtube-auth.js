@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
+import { config } from '../config.js';
 
 const router = Router();
 const youtubeUploader = new YouTubeUploader();
@@ -10,6 +11,13 @@ const youtubeUploader = new YouTubeUploader();
  */
 router.get('/auth', (req, res) => {
   try {
+    // Check if YouTube credentials are configured
+    if (!config.youtube.clientId || !config.youtube.clientSecret) {
+      return res.status(500).json({
+        error: 'YouTube API not configured. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in .env'
+      });
+    }
+
     const authUrl = youtubeUploader.getAuthUrl();
     res.json({ authUrl });
   } catch (error) {

@@ -417,10 +417,11 @@ async function processShort(jobId) {
 
   // Generate thumbnail
   const thumbnailPath = join(outputDir, 'thumbnail.jpg');
+  const thumbnailTimestamp = Math.max(1, Math.min(clipDuration / 3, clipDuration - 1));
   await VideoProcessor.createThumbnail(outputPath, thumbnailPath, {
     width: 1080,
     height: 1920,
-    timestamp: clipDuration / 3 // 1/3 into the video
+    timestamp: thumbnailTimestamp
   });
 
   ShortsJobModel.setOutputPath(jobId, outputPath, thumbnailPath);
