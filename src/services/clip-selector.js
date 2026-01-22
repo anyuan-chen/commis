@@ -1,9 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleAIFileManager } from '@google/generative-ai/server';
 import { promises as fs } from 'fs';
 import { config } from '../config.js';
 import { VideoProcessor } from './video-processor.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+const fileManager = new GoogleAIFileManager(config.geminiApiKey);
 
 export class ClipSelector {
   constructor() {
@@ -12,8 +14,6 @@ export class ClipSelector {
 
   /**
    * Check if a single frame contains cooking-related content
-   * @param {string} framePath - Path to frame image
-   * @returns {Promise<{isCooking: boolean, confidence: number, description: string}>}
    */
   async checkCookingContent(framePath) {
     const imageData = await fs.readFile(framePath);
@@ -51,263 +51,153 @@ Return JSON only:
   }
 
   /**
-   * Score frames for visual appeal, action, and composition
-   * @param {string[]} framePaths - Array of frame paths
-   * @param {number[]} timestamps - Corresponding timestamps
-   * @returns {Promise<Array<{timestamp: number, score: number, features: object}>>}
+   * Upload video to Gemini File API and analyze with native video understanding
    */
-  async scoreFrames(framePaths, timestamps) {
-    const scores = [];
-    const batchSize = 10; // Process in batches to avoid token limits
+  async analyzeAndSelectClip(videoPath, options = {}) {
+    const {
+      minDuration = 15,
+      maxDuration = 60,
+      targetDuration = 30
+    } = options;
 
-    for (let i = 0; i < framePaths.length; i += batchSize) {
-      const batch = framePaths.slice(i, i + batchSize);
-      const batchTimestamps = timestamps.slice(i, i + batchSize);
-      const batchScores = await this._scoreBatch(batch, batchTimestamps);
-      scores.push(...batchScores);
+    // Get video metadata first
+    const metadata = await VideoProcessor.getMetadata(videoPath);
+    const videoDuration = metadata.duration;
+
+    // Upload video to Gemini File API
+    console.log('Uploading video to Gemini...');
+    const uploadResult = await fileManager.uploadFile(videoPath, {
+      mimeType: this._getMimeType(videoPath),
+      displayName: 'cooking-video'
+    });
+
+    // Wait for file to be processed
+    let file = uploadResult.file;
+    while (file.state === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      file = await fileManager.getFile(file.name);
     }
 
-    return scores;
-  }
+    if (file.state === 'FAILED') {
+      throw new Error('Video processing failed');
+    }
 
-  async _scoreBatch(framePaths, timestamps) {
-    const imageParts = await Promise.all(
-      framePaths.map(async (path) => {
-        const data = await fs.readFile(path);
-        return {
-          inlineData: {
-            mimeType: path.endsWith('.png') ? 'image/png' : 'image/jpeg',
-            data: data.toString('base64')
-          }
-        };
-      })
-    );
+    console.log('Video uploaded, analyzing...');
 
-    const prompt = `Analyze these ${framePaths.length} cooking video frames and score each for Shorts potential.
+    // Analyze with native video understanding
+    const prompt = `You are analyzing a cooking video to find the best segment for a YouTube Short.
 
-For each frame (in order), evaluate:
-1. Visual Appeal (0-10): Is this visually interesting? Good lighting, colors, composition?
-2. Action Level (0-10): Is something happening? Movement, cooking action, transformation?
-3. Narrative Value (0-10): Could this be part of a story? Setup, climax, or resolution moment?
+VIDEO DURATION: ${videoDuration.toFixed(1)} seconds
 
-Return JSON array in order:
-[
-  {
-    "frameIndex": 0,
-    "timestamp": ${timestamps[0]},
-    "visualAppeal": 8,
-    "actionLevel": 7,
-    "narrativeValue": 6,
-    "overallScore": 7.0,
-    "isHighlight": true/false,
-    "description": "brief description"
-  },
-  ...
-]
+TASK: Find the single best ${minDuration}-${maxDuration} second segment that would make an engaging YouTube Short.
 
-Only return the JSON array, no other text.`;
+Consider:
+1. HOOK: The segment should start with something visually interesting (not a static shot)
+2. ACTION: Prioritize moments with cooking action (chopping, sizzling, plating, etc.)
+3. NARRATIVE: Ideally has a mini arc - setup, action, payoff (like: raw ingredients → cooking → finished dish)
+4. VISUAL APPEAL: Good lighting, colors, composition
+5. PACING: Enough variety to keep viewers engaged
 
-    const result = await this.model.generateContent([...imageParts, prompt]);
+Return JSON only:
+{
+  "startTime": <seconds as number>,
+  "endTime": <seconds as number>,
+  "duration": <seconds as number>,
+  "confidence": <0.0-1.0>,
+  "reasoning": "<brief explanation of why this segment>",
+  "highlights": [<list of notable timestamps within the segment>],
+  "hookDescription": "<what happens in the first 3 seconds>",
+  "mainAction": "<the key cooking action in this segment>",
+  "payoff": "<the satisfying conclusion, if any>"
+}
+
+IMPORTANT:
+- startTime must be >= 0
+- endTime must be <= ${videoDuration.toFixed(1)}
+- duration must be between ${minDuration} and ${maxDuration} seconds
+- Prefer segments closer to ${targetDuration} seconds if multiple good options exist`;
+
+    const result = await this.model.generateContent([
+      {
+        fileData: {
+          mimeType: file.mimeType,
+          fileUri: file.uri
+        }
+      },
+      prompt
+    ]);
+
     const text = result.response.text();
+
+    // Clean up uploaded file
+    await fileManager.deleteFile(file.name).catch(() => {});
 
     try {
       const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      const parsed = JSON.parse(cleaned);
+      const analysis = JSON.parse(cleaned);
 
-      // Ensure timestamps are correct
-      return parsed.map((item, idx) => ({
-        ...item,
-        timestamp: timestamps[idx] ?? item.timestamp
-      }));
-    } catch {
-      // Fallback: return default scores
-      return timestamps.map((timestamp, idx) => ({
-        frameIndex: idx,
-        timestamp,
-        visualAppeal: 5,
-        actionLevel: 5,
-        narrativeValue: 5,
-        overallScore: 5,
-        isHighlight: false,
-        description: 'Analysis failed'
-      }));
-    }
-  }
+      // Validate and clamp values
+      const startTime = Math.max(0, analysis.startTime || 0);
+      const endTime = Math.min(videoDuration, analysis.endTime || targetDuration);
+      const duration = endTime - startTime;
 
-  /**
-   * Find the best contiguous clip for a Short
-   * @param {Array} frameScores - Scored frames from scoreFrames()
-   * @param {object} options - Selection options
-   * @returns {{startTime: number, endTime: number, score: number, highlights: Array}}
-   */
-  findBestClip(frameScores, options = {}) {
-    const {
-      minDuration = 15, // Minimum 15 seconds
-      maxDuration = 60, // Maximum 60 seconds
-      targetDuration = 30, // Prefer around 30 seconds
-      frameInterval = 1 // Seconds between frames
-    } = options;
+      // If duration is outside bounds, adjust
+      let finalStart = startTime;
+      let finalEnd = endTime;
 
-    // Handle empty or very short videos
-    if (!frameScores || frameScores.length === 0) {
+      if (duration < minDuration) {
+        // Extend to minimum duration
+        const needed = minDuration - duration;
+        finalEnd = Math.min(videoDuration, finalEnd + needed);
+        if (finalEnd - finalStart < minDuration) {
+          finalStart = Math.max(0, finalEnd - minDuration);
+        }
+      } else if (duration > maxDuration) {
+        // Trim to maximum duration
+        finalEnd = finalStart + maxDuration;
+      }
+
+      return {
+        startTime: finalStart,
+        endTime: finalEnd,
+        duration: finalEnd - finalStart,
+        confidence: analysis.confidence || 0.8,
+        reasoning: analysis.reasoning || '',
+        highlights: analysis.highlights || [],
+        hookDescription: analysis.hookDescription || '',
+        mainAction: analysis.mainAction || '',
+        payoff: analysis.payoff || '',
+        videoDuration
+      };
+    } catch (err) {
+      console.error('Failed to parse clip analysis:', text);
+
+      // Fallback: use first portion of video
+      const fallbackDuration = Math.min(targetDuration, videoDuration);
       return {
         startTime: 0,
-        endTime: minDuration,
-        score: 0,
+        endTime: fallbackDuration,
+        duration: fallbackDuration,
+        confidence: 0,
+        reasoning: 'Fallback - analysis failed',
         highlights: [],
-        frameAnalysis: []
+        hookDescription: '',
+        mainAction: '',
+        payoff: '',
+        videoDuration
       };
     }
+  }
 
-    const minFrames = Math.ceil(minDuration / frameInterval);
-    const maxFrames = Math.ceil(maxDuration / frameInterval);
-
-    let bestWindow = null;
-    let bestScore = -Infinity;
-
-    // If video is shorter than minDuration, use whole video
-    if (frameScores.length < minFrames) {
-      return {
-        startTime: frameScores[0].timestamp,
-        endTime: frameScores[frameScores.length - 1].timestamp + frameInterval,
-        score: 0,
-        highlights: frameScores.filter(f => f.isHighlight).map(f => f.timestamp),
-        frameAnalysis: frameScores
-      };
-    }
-
-    // Sliding window approach
-    for (let windowSize = minFrames; windowSize <= maxFrames; windowSize++) {
-      for (let start = 0; start <= frameScores.length - windowSize; start++) {
-        const window = frameScores.slice(start, start + windowSize);
-        const score = this._calculateWindowScore(window, targetDuration, frameInterval);
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestWindow = {
-            startIndex: start,
-            endIndex: start + windowSize - 1,
-            frames: window
-          };
-        }
-      }
-    }
-
-    if (!bestWindow) {
-      // Fallback: use the whole video or first maxDuration seconds
-      const endIdx = Math.min(frameScores.length - 1, maxFrames - 1);
-      return {
-        startTime: frameScores[0]?.timestamp || 0,
-        endTime: frameScores[endIdx]?.timestamp + frameInterval || maxDuration,
-        score: 0,
-        highlights: [],
-        frameAnalysis: frameScores.slice(0, endIdx + 1)
-      };
-    }
-
-    const highlights = bestWindow.frames
-      .filter(f => f.isHighlight || f.overallScore >= 7)
-      .map(f => f.timestamp);
-
-    return {
-      startTime: frameScores[bestWindow.startIndex].timestamp,
-      endTime: frameScores[bestWindow.endIndex].timestamp + frameInterval,
-      score: bestScore,
-      highlights,
-      frameAnalysis: bestWindow.frames
+  _getMimeType(filePath) {
+    const ext = filePath.split('.').pop().toLowerCase();
+    const mimeTypes = {
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo',
+      'webm': 'video/webm',
+      'mkv': 'video/x-matroska'
     };
-  }
-
-  _calculateWindowScore(frames, targetDuration, frameInterval) {
-    // Average visual quality
-    const avgVisual = frames.reduce((sum, f) => sum + f.visualAppeal, 0) / frames.length;
-
-    // Average action level
-    const avgAction = frames.reduce((sum, f) => sum + f.actionLevel, 0) / frames.length;
-
-    // Narrative arc bonus: look for buildup to payoff
-    const narrativeArc = this._calculateNarrativeArc(frames);
-
-    // Duration preference: prefer clips closer to target
-    const duration = frames.length * frameInterval;
-    const durationScore = 10 - Math.abs(duration - targetDuration) * 0.2;
-
-    // Highlight density: prefer clips with highlight moments
-    const highlightDensity = frames.filter(f => f.isHighlight).length / frames.length;
-
-    // Combined score with weights
-    return (
-      avgVisual * 0.25 +
-      avgAction * 0.25 +
-      narrativeArc * 0.2 +
-      durationScore * 0.15 +
-      highlightDensity * 10 * 0.15
-    );
-  }
-
-  _calculateNarrativeArc(frames) {
-    // Look for buildup (increasing action) followed by payoff (high point)
-    // Then optional resolution (calming down)
-
-    if (frames.length < 5) return 5; // Too short to evaluate
-
-    const third = Math.floor(frames.length / 3);
-    const firstThird = frames.slice(0, third);
-    const middleThird = frames.slice(third, third * 2);
-    const lastThird = frames.slice(third * 2);
-
-    const avgFirst = firstThird.reduce((sum, f) => sum + f.actionLevel, 0) / firstThird.length;
-    const avgMiddle = middleThird.reduce((sum, f) => sum + f.actionLevel, 0) / middleThird.length;
-    const avgLast = lastThird.reduce((sum, f) => sum + f.actionLevel, 0) / lastThird.length;
-
-    // Ideal: buildup in first third, peak in middle, resolution in last
-    // Or: steady buildup to climax at end
-    let arcScore = 5;
-
-    if (avgMiddle > avgFirst && avgMiddle >= avgLast) {
-      // Classic arc: buildup → climax → resolution
-      arcScore = 8 + (avgMiddle - avgFirst) * 0.5;
-    } else if (avgLast > avgMiddle && avgMiddle > avgFirst) {
-      // Rising action: buildup → climax at end
-      arcScore = 7 + (avgLast - avgFirst) * 0.3;
-    }
-
-    return Math.min(10, arcScore);
-  }
-
-  /**
-   * Full analysis pipeline: extract frames, score, and find best clip
-   * @param {string} videoPath - Path to video file
-   * @param {object} options - Analysis options
-   * @returns {Promise<{startTime: number, endTime: number, score: number, ...}>}
-   */
-  async analyzeAndSelectClip(videoPath, options = {}) {
-    // Extract frames at 1-second intervals
-    const { paths, timestamps, duration } = await VideoProcessor.extractFramesForAnalysis(videoPath, {
-      interval: options.frameInterval || 1
-    });
-
-    // Score all frames
-    const frameScores = await this.scoreFrames(paths, timestamps);
-
-    // Find best clip
-    const bestClip = this.findBestClip(frameScores, {
-      ...options,
-      frameInterval: options.frameInterval || 1
-    });
-
-    // Clean up temporary frames
-    if (!options.keepFrames) {
-      const framesDir = paths[0]?.split('/').slice(0, -1).join('/');
-      if (framesDir) {
-        await fs.rm(framesDir, { recursive: true, force: true }).catch(() => {});
-      }
-    }
-
-    return {
-      ...bestClip,
-      videoDuration: duration,
-      framesAnalyzed: paths.length
-    };
+    return mimeTypes[ext] || 'video/mp4';
   }
 }
