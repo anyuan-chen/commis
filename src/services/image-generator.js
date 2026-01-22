@@ -8,17 +8,11 @@ import { RestaurantModel, NoteModel } from '../db/models/index.js';
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 /**
- * Image generator using Nano Banana (Gemini image models)
- *
- * Models:
- * - gemini-2.5-flash-image: Fast, cheap (~$0.02/image)
- * - gemini-3-pro-image-preview: High quality, 4K, better text (~$0.12/image)
+ * Image generator using Gemini image model
  */
 export class ImageGenerator {
-  constructor(options = {}) {
-    this.modelId = options.pro
-      ? 'gemini-3-pro-image-preview'  // Nano Banana Pro
-      : 'gemini-2.5-flash-image';      // Nano Banana
+  constructor() {
+    this.modelId = 'gemini-3-pro-image-preview';
 
     this.model = genAI.getGenerativeModel({
       model: this.modelId,
