@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline Debug</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    /* Sessions List */
+    .sessions-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 30px;
+    }
+
+    .session-card {
+      background: white;
+      border-radius: 8px;
+      padding: 15px 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      transition: box-shadow 0.2s;
+    }
+
+    .session-card:hover {
+      box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+    }
+
+    .session-card.active {
+      border: 2px solid #2196F3;
+    }
+
+    .session-time {
+      color: #666;
+      font-size: 14px;
+      min-width: 150px;
+    }
+
+    .session-steps {
+      display: flex;
+      gap: 8px;
+    }
+
+    .step-badge {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+      color: white;
+    }
+
+    .step-badge.done { background: #4CAF50; }
+    .step-badge.pending { background: #ddd; color: #999; }
+
+    .session-restaurant {
+      flex: 1;
+      font-weight: 500;
+    }
+
+    /* Pipeline View */
+    .pipeline-view {
+      display: none;
+    }
+
+    .pipeline-view.active {
+      display: block;
+    }
+
+    .back-btn {
+      background: none;
+      border: none;
+      color: #2196F3;
+      cursor: pointer;
+      font-size: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .pipeline-header {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .pipeline-header h2 {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    .pipeline-meta {
+      color: #666;
+      font-size: 14px;
+    }
+
+    /* Pipeline Steps Visual */
+    .pipeline-steps {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 30px;
+      position: relative;
+    }
+
+    .pipeline-steps::before {
+      content: '';
+      position: absolute;
+      top: 25px;
+      left: 50px;
+      right: 50px;
+      height: 4px;
+      background: #ddd;
+      z-index: 0;
+    }
+
+    .pipeline-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      z-index: 1;
+      cursor: pointer;
+    }
+
+    .step-icon {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      background: #ddd;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      transition: transform 0.2s;
+    }
+
+    .pipeline-step.done .step-icon { background: #4CAF50; }
+    .pipeline-step.active .step-icon {
+      background: #2196F3;
+      transform: scale(1.1);
+      box-shadow: 0 4px 15px rgba(33, 150, 243, 0.4);
+    }
+    .pipeline-step.error .step-icon { background: #f44336; }
+
+    .step-label {
+      font-size: 13px;
+      color: #666;
+      text-align: center;
+    }
+
+    .pipeline-step.active .step-label {
+      color: #2196F3;
+      font-weight: 600;
+    }
+
+    /* Step Detail */
+    .step-detail {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .step-detail h3 {
+      font-size: 16px;
+      margin-bottom: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-tag {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: normal;
+    }
+
+    .status-tag.success { background: #e8f5e9; color: #2e7d32; }
+    .status-tag.error { background: #ffebee; color: #c62828; }
+
+    /* Frames Grid */
+    .frames-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .frame-thumb {
+      aspect-ratio: 16/9;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #eee;
+    }
+
+    .frame-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Data Display */
+    .data-section {
+      margin-bottom: 20px;
+    }
+
+    .data-section h4 {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .data-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 15px;
+    }
+
+    .data-card {
+      background: #f9f9f9;
+      border-radius: 6px;
+      padding: 12px;
+    }
+
+    .data-card .label {
+      font-size: 12px;
+      color: #999;
+      margin-bottom: 4px;
+    }
+
+    .data-card .value {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+    }
+
+    .data-card .value.good { color: #4CAF50; }
+    .data-card .value.warn { color: #FF9800; }
+    .data-card .value.bad { color: #f44336; }
+
+    /* JSON Viewer */
+    .json-viewer {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      padding: 15px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      overflow-x: auto;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .json-key { color: #9cdcfe; }
+    .json-string { color: #ce9178; }
+    .json-number { color: #b5cea8; }
+    .json-boolean { color: #569cd6; }
+    .json-null { color: #569cd6; }
+
+    /* Menu Items */
+    .menu-items-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .menu-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px;
+      background: #f9f9f9;
+      border-radius: 6px;
+    }
+
+    .menu-item .name { font-weight: 500; }
+    .menu-item .price { color: #4CAF50; }
+
+    /* Website Preview */
+    .website-preview {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .website-preview iframe {
+      width: 100%;
+      height: 500px;
+      border: none;
+    }
+
+    .preview-link {
+      display: block;
+      padding: 10px;
+      background: #f9f9f9;
+      text-align: center;
+      color: #2196F3;
+      text-decoration: none;
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #999;
+    }
+
+    .empty-state .icon {
+      font-size: 48px;
+      margin-bottom: 15px;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 5px;
+      margin-bottom: 15px;
+    }
+
+    .tab {
+      padding: 8px 16px;
+      border: none;
+      background: #eee;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .tab.active {
+      background: #2196F3;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Pipeline Debug Viewer</h1>
+
+    <!-- Sessions List View -->
+    <div id="sessions-view">
+      <div class="sessions-list" id="sessions-list">
+        <div class="empty-state">
+          <div class="icon">🔍</div>
+          <div>Loading sessions...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pipeline Detail View -->
+    <div class="pipeline-view" id="pipeline-view">
+      <button class="back-btn" onclick="showSessions()">← Back to sessions</button>
+
+      <div class="pipeline-header">
+        <h2 id="session-title">Session</h2>
+        <div class="pipeline-meta" id="session-meta"></div>
+      </div>
+
+      <div class="pipeline-steps" id="pipeline-steps">
+        <div class="pipeline-step" data-step="1" onclick="showStep(1)">
+          <div class="step-icon">🎬</div>
+          <div class="step-label">Frame<br>Extraction</div>
+        </div>
+        <div class="pipeline-step" data-step="2" onclick="showStep(2)">
+          <div class="step-icon">🤖</div>
+          <div class="step-label">Video<br>Analysis</div>
+        </div>
+        <div class="pipeline-step" data-step="3" onclick="showStep(3)">
+          <div class="step-icon">💾</div>
+          <div class="step-label">Database<br>Storage</div>
+        </div>
+        <div class="pipeline-step" data-step="4" onclick="showStep(4)">
+          <div class="step-icon">🌐</div>
+          <div class="step-label">Website<br>Generation</div>
+        </div>
+      </div>
+
+      <div class="step-detail" id="step-detail">
+        <div class="empty-state">
+          <div class="icon">👆</div>
+          <div>Click a step to view details</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentSession = null;
+    let sessionData = null;
+
+    // Load sessions list
+    async function loadSessions() {
+      try {
+        const res = await fetch('/api/debug/sessions');
+        const { sessions } = await res.json();
+
+        const list = document.getElementById('sessions-list');
+
+        if (sessions.length === 0) {
+          list.innerHTML = `
+            <div class="empty-state">
+              <div class="icon">📭</div>
+              <div>No debug sessions yet</div>
+              <div style="margin-top:10px;font-size:14px">
+                Run: <code>npm run debug ./video.mp4</code>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        list.innerHTML = sessions.map(s => {
+          const date = new Date(s.created);
+          const timeStr = date.toLocaleString();
+          const restaurant = s.summary?.restaurant?.name || 'Unknown Restaurant';
+          const stepsCompleted = s.steps.length;
+
+          return `
+            <div class="session-card" onclick="loadSession('${s.id}')">
+              <div class="session-time">${timeStr}</div>
+              <div class="session-steps">
+                ${[1,2,3,4].map(n => `
+                  <div class="step-badge ${s.steps.includes('step-' + n) ? 'done' : 'pending'}">${n}</div>
+                `).join('')}
+              </div>
+              <div class="session-restaurant">${restaurant}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error('Failed to load sessions:', err);
+      }
+    }
+
+    // Load specific session
+    async function loadSession(sessionId) {
+      currentSession = sessionId;
+
+      try {
+        const res = await fetch(`/api/debug/sessions/${sessionId}`);
+        sessionData = await res.json();
+
+        document.getElementById('session-title').textContent =
+          sessionData.summary?.restaurant?.name || sessionId;
+        document.getElementById('session-meta').textContent =
+          `Session: ${sessionId}`;
+
+        // Update step indicators
+        document.querySelectorAll('.pipeline-step').forEach(el => {
+          const step = el.dataset.step;
+          const hasStep = sessionData[`step-${step}`];
+          el.classList.toggle('done', hasStep);
+          el.classList.remove('active');
+        });
+
+        // Show first available step
+        const firstStep = [1,2,3,4].find(n => sessionData[`step-${n}`]) || 1;
+        showStep(firstStep);
+
+        document.getElementById('sessions-view').style.display = 'none';
+        document.getElementById('pipeline-view').classList.add('active');
+      } catch (err) {
+        console.error('Failed to load session:', err);
+      }
+    }
+
+    function showSessions() {
+      document.getElementById('sessions-view').style.display = 'block';
+      document.getElementById('pipeline-view').classList.remove('active');
+      currentSession = null;
+      sessionData = null;
+    }
+
+    function showStep(stepNum) {
+      // Update active step
+      document.querySelectorAll('.pipeline-step').forEach(el => {
+        el.classList.toggle('active', el.dataset.step === String(stepNum));
+      });
+
+      const stepData = sessionData[`step-${stepNum}`];
+      const detail = document.getElementById('step-detail');
+
+      if (!stepData) {
+        detail.innerHTML = `
+          <div class="empty-state">
+            <div class="icon">⏸️</div>
+            <div>Step ${stepNum} not executed</div>
+          </div>
+        `;
+        return;
+      }
+
+      switch (stepNum) {
+        case 1: renderStep1(stepData); break;
+        case 2: renderStep2(stepData); break;
+        case 3: renderStep3(stepData); break;
+        case 4: renderStep4(stepData); break;
+      }
+    }
+
+    // Step 1: Frame Extraction
+    function renderStep1(data) {
+      const frames = sessionData.frames || [];
+      const detail = document.getElementById('step-detail');
+
+      detail.innerHTML = `
+        <h3>
+          Frame Extraction
+          <span class="status-tag ${data.success ? 'success' : 'error'}">
+            ${data.success ? 'Success' : 'Failed'}
+          </span>
+        </h3>
+
+        <div class="data-section">
+          <h4>Metrics</h4>
+          <div class="data-grid">
+            <div class="data-card">
+              <div class="label">Frames Extracted</div>
+              <div class="value">${data.framesExtracted || 0}</div>
+            </div>
+            <div class="data-card">
+              <div class="label">Video Duration</div>
+              <div class="value">${data.videoDuration ? data.videoDuration.toFixed(1) + 's' : 'N/A'}</div>
+            </div>
+            <div class="data-card">
+              <div class="label">Avg Brightness</div>
+              <div class="value ${getQualityClass(data.avgBrightness, 40, 80)}">
+                ${data.avgBrightness ? data.avgBrightness.toFixed(0) : 'N/A'}
+              </div>
+            </div>
+            <div class="data-card">
+              <div class="label">Resolution</div>
+              <div class="value">${data.resolution || 'N/A'}</div>
+            </div>
+          </div>
+        </div>
+
+        ${frames.length > 0 ? `
+          <div class="data-section">
+            <h4>Extracted Frames (${frames.length})</h4>
+            <div class="frames-grid">
+              ${frames.slice(0, 12).map(f => `
+                <div class="frame-thumb">
+                  <img src="/api/debug/sessions/${currentSession}/frames/${f}" alt="${f}">
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    // Step 2: Video Analysis
+    function renderStep2(data) {
+      const detail = document.getElementById('step-detail');
+      const restaurant = data.restaurant || {};
+
+      detail.innerHTML = `
+        <h3>
+          Video Analysis
+          <span class="status-tag ${data.success ? 'success' : 'error'}">
+            ${data.success ? 'Success' : 'Failed'}
+          </span>
+        </h3>
+
+        <div class="tabs">
+          <button class="tab active" onclick="showTab(this, 'analysis-overview')">Overview</button>
+          <button class="tab" onclick="showTab(this, 'analysis-menu')">Menu Items</button>
+          <button class="tab" onclick="showTab(this, 'analysis-raw')">Raw JSON</button>
+        </div>
+
+        <div id="analysis-overview" class="tab-content">
+          <div class="data-section">
+            <h4>Restaurant Info</h4>
+            <div class="data-grid">
+              <div class="data-card">
+                <div class="label">Name</div>
+                <div class="value">${restaurant.name || 'Not detected'}</div>
+              </div>
+              <div class="data-card">
+                <div class="label">Cuisine Type</div>
+                <div class="value">${restaurant.cuisineType || 'Not detected'}</div>
+              </div>
+              <div class="data-card">
+                <div class="label">Atmosphere</div>
+                <div class="value">${restaurant.atmosphere || 'Not detected'}</div>
+              </div>
+              <div class="data-card">
+                <div class="label">Price Range</div>
+                <div class="value">${restaurant.priceRange || 'Not detected'}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="data-section">
+            <h4>Quality Scores</h4>
+            <div class="data-grid">
+              <div class="data-card">
+                <div class="label">Name Confidence</div>
+                <div class="value ${getQualityClass(data.quality?.nameConfidence, 0.5, 0.8)}">
+                  ${data.quality?.nameConfidence ? (data.quality.nameConfidence * 100).toFixed(0) + '%' : 'N/A'}
+                </div>
+              </div>
+              <div class="data-card">
+                <div class="label">Menu Items Found</div>
+                <div class="value ${getQualityClass(data.quality?.menuItemsCount, 3, 8)}">
+                  ${data.quality?.menuItemsCount || 0}
+                </div>
+              </div>
+              <div class="data-card">
+                <div class="label">Contact Info</div>
+                <div class="value ${data.quality?.hasContactInfo ? 'good' : 'warn'}">
+                  ${data.quality?.hasContactInfo ? 'Found' : 'Missing'}
+                </div>
+              </div>
+              <div class="data-card">
+                <div class="label">Hours Info</div>
+                <div class="value ${data.quality?.hasHours ? 'good' : 'warn'}">
+                  ${data.quality?.hasHours ? 'Found' : 'Missing'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="analysis-menu" class="tab-content" style="display:none">
+          <div class="data-section">
+            <h4>Detected Menu Items</h4>
+            <div class="menu-items-list">
+              ${(restaurant.menu || []).map(item => `
+                <div class="menu-item">
+                  <div>
+                    <div class="name">${item.name}</div>
+                    <div style="color:#666;font-size:12px">${item.description || ''}</div>
+                  </div>
+                  <div class="price">${item.price ? '$' + item.price : ''}</div>
+                </div>
+              `).join('') || '<div style="color:#999">No menu items detected</div>'}
+            </div>
+          </div>
+        </div>
+
+        <div id="analysis-raw" class="tab-content" style="display:none">
+          <div class="json-viewer">${formatJSON(data)}</div>
+        </div>
+      `;
+    }
+
+    // Step 3: Database Storage
+    function renderStep3(data) {
+      const detail = document.getElementById('step-detail');
+
+      detail.innerHTML = `
+        <h3>
+          Database Storage
+          <span class="status-tag ${data.success ? 'success' : 'error'}">
+            ${data.success ? 'Success' : 'Failed'}
+          </span>
+        </h3>
+
+        <div class="data-section">
+          <h4>Storage Info</h4>
+          <div class="data-grid">
+            <div class="data-card">
+              <div class="label">Restaurant ID</div>
+              <div class="value" style="font-size:14px;word-break:break-all">
+                ${data.restaurantId || 'N/A'}
+              </div>
+            </div>
+            <div class="data-card">
+              <div class="label">Records Created</div>
+              <div class="value">${data.recordsCreated || 0}</div>
+            </div>
+            <div class="data-card">
+              <div class="label">Menu Items Saved</div>
+              <div class="value">${data.menuItemsSaved || 0}</div>
+            </div>
+          </div>
+        </div>
+
+        ${data.error ? `
+          <div class="data-section">
+            <h4>Error</h4>
+            <div style="color:#c62828;background:#ffebee;padding:10px;border-radius:6px">
+              ${data.error}
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="data-section">
+          <h4>Raw Data</h4>
+          <div class="json-viewer">${formatJSON(data)}</div>
+        </div>
+      `;
+    }
+
+    // Step 4: Website Generation
+    function renderStep4(data) {
+      const detail = document.getElementById('step-detail');
+
+      detail.innerHTML = `
+        <h3>
+          Website Generation
+          <span class="status-tag ${data.success ? 'success' : 'error'}">
+            ${data.success ? 'Success' : 'Failed'}
+          </span>
+        </h3>
+
+        <div class="tabs">
+          <button class="tab active" onclick="showTab(this, 'website-checks')">Quality Checks</button>
+          <button class="tab" onclick="showTab(this, 'website-preview')">Preview</button>
+          <button class="tab" onclick="showTab(this, 'website-raw')">Raw Data</button>
+        </div>
+
+        <div id="website-checks" class="tab-content">
+          <div class="data-section">
+            <h4>Element Checks</h4>
+            <div class="data-grid">
+              ${Object.entries(data.checks || {}).map(([key, val]) => `
+                <div class="data-card">
+                  <div class="label">${formatCheckName(key)}</div>
+                  <div class="value ${val ? 'good' : 'bad'}">
+                    ${val ? '✓ Found' : '✗ Missing'}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="data-section">
+            <h4>Generation Stats</h4>
+            <div class="data-grid">
+              <div class="data-card">
+                <div class="label">HTML Size</div>
+                <div class="value">${data.htmlSize ? (data.htmlSize / 1024).toFixed(1) + ' KB' : 'N/A'}</div>
+              </div>
+              <div class="data-card">
+                <div class="label">Generation Time</div>
+                <div class="value">${data.generationTime ? data.generationTime.toFixed(1) + 's' : 'N/A'}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="website-preview" class="tab-content" style="display:none">
+          <div class="website-preview">
+            <iframe src="/api/debug/sessions/${currentSession}/website"></iframe>
+            <a href="/api/debug/sessions/${currentSession}/website" target="_blank" class="preview-link">
+              Open in new tab →
+            </a>
+          </div>
+        </div>
+
+        <div id="website-raw" class="tab-content" style="display:none">
+          <div class="json-viewer">${formatJSON(data)}</div>
+        </div>
+      `;
+    }
+
+    // Helpers
+    function showTab(btn, tabId) {
+      const tabs = btn.parentElement.querySelectorAll('.tab');
+      tabs.forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+
+      const contents = btn.parentElement.parentElement.querySelectorAll('.tab-content');
+      contents.forEach(c => c.style.display = 'none');
+      document.getElementById(tabId).style.display = 'block';
+    }
+
+    function getQualityClass(value, warnThreshold, goodThreshold) {
+      if (value === undefined || value === null) return '';
+      if (value >= goodThreshold) return 'good';
+      if (value >= warnThreshold) return 'warn';
+      return 'bad';
+    }
+
+    function formatCheckName(key) {
+      return key
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/^./, str => str.toUpperCase())
+        .replace('Has ', '');
+    }
+
+    function formatJSON(obj) {
+      const json = JSON.stringify(obj, null, 2);
+      return json
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
+        .replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>')
+        .replace(/: (\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
+        .replace(/: (true|false)/g, ': <span class="json-boolean">$1</span>')
+        .replace(/: (null)/g, ': <span class="json-null">$1</span>');
+    }
+
+    // Init
+    loadSessions();
+  </script>
+</body>
+</html>
