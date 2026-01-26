@@ -5,3 +5,4 @@ export { MaterialModel } from './material.js';
 export { JobModel } from './job.js';
 export { NoteModel } from './note.js';
 export { ShortsJobModel } from './shorts-job.js';
+export { OrderModel } from './order.js';

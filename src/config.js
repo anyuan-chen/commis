@@ -7,6 +7,7 @@ const __dirname = dirname(__filename);
 export const config = {
   port: process.env.PORT || 3000,
   geminiApiKey: process.env.GEMINI_API_KEY,
+  openaiApiKey: process.env.OPENAI_API_KEY,
   cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
   cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
 
@@ -37,5 +38,22 @@ export const config = {
   audio: {
     inputSampleRate: 16000,
     outputSampleRate: 24000
+  },
+
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET
+  },
+
+  google: {
+    mapsApiKey: process.env.GOOGLE_MAPS_API_KEY
+  },
+
+  googleAds: {
+    clientId: process.env.GOOGLE_ADS_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_ADS_CLIENT_SECRET,
+    developerToken: process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
+    redirectUri: process.env.GOOGLE_ADS_REDIRECT_URI || 'http://localhost:3000/api/google-ads/callback'
   }
 };

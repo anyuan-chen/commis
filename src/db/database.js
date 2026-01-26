@@ -45,6 +45,24 @@ for (const statement of statements) {
     }
   }
 }
+
+// Migrations for existing databases
+const migrations = [
+  // Add ASMR output path column for dual short types
+  'ALTER TABLE shorts_jobs ADD COLUMN output_path_asmr TEXT'
+];
+
+for (const migration of migrations) {
+  try {
+    db.run(migration);
+  } catch (err) {
+    // Ignore "duplicate column" errors for migrations that already ran
+    if (!err.message.includes('duplicate column')) {
+      console.error('Migration error:', err.message);
+    }
+  }
+}
+
 saveDatabase();
 
 // Wrapper to match better-sqlite3 API style
