@@ -4,7 +4,7 @@ import { pipeline } from 'stream/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { ShortsJobModel } from '../db/models/shorts-job.js';
-import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewModel, ReviewPlatformModel } from '../db/models/index.js';
+import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewModel, ReviewPlatformModel, ReviewDigestModel } from '../db/models/index.js';
 import { processShort } from '../routes/shorts.js';
 import { getStoredTokens, storeTokens } from '../routes/youtube-auth.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
@@ -674,6 +674,43 @@ export const tools = [
         restaurantName: restaurant.name,
         linked: true,
         platforms
+      };
+    }
+  },
+
+  {
+    name: 'get_latest_digest',
+    description: 'Get the most recent review digest for a restaurant without generating a new one. Returns sentiment summary, complaints, praise themes, and suggested actions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        restaurantId: {
+          type: 'string',
+          description: 'ID of the restaurant to get digest for'
+        }
+      },
+      required: ['restaurantId']
+    },
+    handler: async ({ restaurantId }) => {
+      const restaurant = RestaurantModel.getById(restaurantId);
+      if (!restaurant) {
+        throw new Error(`Restaurant not found: ${restaurantId}`);
+      }
+
+      const digest = ReviewDigestModel.getLatest(restaurantId);
+
+      if (!digest) {
+        return {
+          restaurantName: restaurant.name,
+          hasDigest: false,
+          message: 'No digest available. Use generate_review_digest to create one.'
+        };
+      }
+
+      return {
+        restaurantName: restaurant.name,
+        hasDigest: true,
+        ...digest
       };
     }
   }

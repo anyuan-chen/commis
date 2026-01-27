@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { config } from '../config.js';
+import { ReviewDigestModel, ReviewModel } from '../db/models/index.js';
 
 /**
  * Gemini Live WebSocket client for voice interactions
@@ -234,10 +235,41 @@ export class GeminiLiveClient {
  * Create system instruction for restaurant assistant
  */
 export function createSystemInstruction(restaurantData) {
+  // Get latest review digest if available
+  let reviewSection = '';
+  const latestDigest = ReviewDigestModel.getLatest(restaurantData.id);
+
+  if (latestDigest && latestDigest.reviewCount > 0) {
+    const stats = ReviewModel.getStats(restaurantData.id);
+    reviewSection = `
+
+RECENT CUSTOMER REVIEWS DIGEST (${latestDigest.periodStart?.slice(0, 10)} to ${latestDigest.periodEnd?.slice(0, 10)}):
+- Reviews analyzed: ${latestDigest.reviewCount}
+- Average rating: ${latestDigest.avgRating?.toFixed(1) || 'N/A'}/5
+- Total reviews in database: ${stats?.total_reviews || 0}
+
+Summary: ${latestDigest.sentimentSummary}
+
+Top complaints to address:
+${latestDigest.commonComplaints?.slice(0, 3).map(c => `- [${c.severity}] ${c.theme}`).join('\n') || '- None identified'}
+
+What customers love:
+${latestDigest.praiseThemes?.slice(0, 3).map(p => `- ${p.theme} (${p.count} mentions)`).join('\n') || '- No data yet'}
+
+Suggested actions:
+${latestDigest.suggestedActions?.slice(0, 2).map(a => `- [${a.priority}] ${a.action}`).join('\n') || '- None yet'}
+
+PROACTIVELY mention review insights when relevant. For example:
+- If user asks about improvements: reference the complaints and suggested actions
+- If user seems unsure what to work on: suggest addressing top complaints
+- If user wants to promote something: mention what customers already love`;
+  }
+
   return `You are a friendly and helpful restaurant marketing assistant. You're helping the user create marketing materials for their restaurant.
 
 CURRENT RESTAURANT DATA:
 ${JSON.stringify(restaurantData, null, 2)}
+${reviewSection}
 
 YOUR CAPABILITIES:
 1. Update restaurant information (name, description, hours, contact info)
@@ -247,6 +279,7 @@ YOUR CAPABILITIES:
 5. Modify brochure design
 6. Deploy website to the internet
 7. Regenerate marketing materials
+8. Get review insights and digest summaries
 
 GUIDELINES:
 - Be conversational and helpful
@@ -254,6 +287,7 @@ GUIDELINES:
 - Confirm changes before making them for important updates
 - Suggest improvements to make their marketing materials better
 - Keep responses concise since this is a voice interface
+- Proactively share review insights when they're relevant to what the user is working on
 
 When the user asks you to make changes, use the appropriate tool to update the data. Always confirm what you changed.
 
@@ -531,6 +565,27 @@ export const voiceTools = [
         category: {
           type: 'string',
           description: 'Specific menu category to feature, or omit for full menu'
+        }
+      }
+    }
+  },
+  {
+    name: 'getReviewDigest',
+    description: 'Get the latest review digest with sentiment analysis, complaints, praise, and suggested actions',
+    parameters: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'getReviewStats',
+    description: 'Get quick review statistics like total count, average rating, and sentiment breakdown',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: {
+          type: 'number',
+          description: 'Number of days to analyze (default: 30)'
         }
       }
     }
