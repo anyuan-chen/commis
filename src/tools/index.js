@@ -1,4 +1,4 @@
-import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, NoteModel } from '../db/models/index.js';
+import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, NoteModel, ReviewModel, ReviewDigestModel } from '../db/models/index.js';
 
 /**
  * Tool executor - handles all voice command tool calls
@@ -48,7 +48,9 @@ export class ToolExecutor {
       generateSocialGraphic: () => this.generateSocialGraphic(args),
       generatePromoGraphic: () => this.generatePromoGraphic(args),
       generateHolidayGraphic: () => this.generateHolidayGraphic(args),
-      generateMenuGraphic: () => this.generateMenuGraphic(args)
+      generateMenuGraphic: () => this.generateMenuGraphic(args),
+      getReviewDigest: () => this.getReviewDigest(),
+      getReviewStats: () => this.getReviewStats(args)
     };
 
     const handler = handlers[toolName];
@@ -435,5 +437,72 @@ export class ToolExecutor {
     } catch (error) {
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * Get the latest review digest
+   */
+  async getReviewDigest() {
+    const digest = ReviewDigestModel.getLatest(this.restaurantId);
+
+    if (!digest) {
+      return {
+        success: false,
+        message: 'No review digest available yet. Reviews need to be collected and analyzed first.'
+      };
+    }
+
+    return {
+      success: true,
+      period: `${digest.periodStart?.slice(0, 10)} to ${digest.periodEnd?.slice(0, 10)}`,
+      reviewCount: digest.reviewCount,
+      avgRating: digest.avgRating?.toFixed(1),
+      sentimentSummary: digest.sentimentSummary,
+      topComplaints: digest.commonComplaints?.slice(0, 3).map(c => ({
+        issue: c.theme,
+        severity: c.severity
+      })),
+      whatCustomersLove: digest.praiseThemes?.slice(0, 3).map(p => ({
+        theme: p.theme,
+        mentions: p.count
+      })),
+      suggestedActions: digest.suggestedActions?.slice(0, 2).map(a => ({
+        action: a.action,
+        priority: a.priority
+      }))
+    };
+  }
+
+  /**
+   * Get quick review statistics
+   */
+  async getReviewStats({ days = 30 } = {}) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const stats = ReviewModel.getStats(this.restaurantId, {
+      startDate: startDate.toISOString()
+    });
+
+    if (!stats || stats.total_reviews === 0) {
+      return {
+        success: false,
+        message: 'No reviews found for this period.'
+      };
+    }
+
+    return {
+      success: true,
+      period: `Last ${days} days`,
+      totalReviews: stats.total_reviews,
+      avgRating: stats.avg_rating ? parseFloat(stats.avg_rating.toFixed(2)) : null,
+      sentimentBreakdown: {
+        positive: stats.positive_count || 0,
+        negative: stats.negative_count || 0,
+        neutral: stats.neutral_count || 0,
+        mixed: stats.mixed_count || 0
+      },
+      avgSentimentScore: stats.avg_sentiment ? parseFloat(stats.avg_sentiment.toFixed(2)) : null
+    };
   }
 }
