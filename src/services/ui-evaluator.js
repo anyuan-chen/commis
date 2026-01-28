@@ -3,6 +3,7 @@ import puppeteer from 'puppeteer';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { config } from '../config.js';
+import { analyzeLayout } from './layout-analyzer.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
@@ -40,8 +41,8 @@ export class UIEvaluator {
   }
 
   /**
-   * Capture screenshots at multiple viewport sizes
-   * Returns array of { viewport, buffer, base64 }
+   * Capture screenshots at multiple viewport sizes and run layout analysis
+   * Returns { screenshots, layoutAnalysis }
    */
   async captureScreenshots(html, outputDir = null) {
     await this.init();
@@ -53,6 +54,7 @@ export class UIEvaluator {
     ];
 
     const screenshots = [];
+    const layoutResults = {};
     const page = await this.browser.newPage();
 
     try {
@@ -62,6 +64,10 @@ export class UIEvaluator {
 
         // Wait for fonts to load
         await page.evaluate(() => document.fonts.ready);
+
+        // Run layout analysis while page is rendered (measures actual computed styles)
+        const layoutAnalysis = await analyzeLayout(page);
+        layoutResults[vp.name] = layoutAnalysis;
 
         // Capture full page screenshot
         const buffer = await page.screenshot({
@@ -92,7 +98,7 @@ export class UIEvaluator {
       await page.close();
     }
 
-    return screenshots;
+    return { screenshots, layoutAnalysis: layoutResults };
   }
 
   /**
@@ -264,31 +270,53 @@ A score below 6 means it needs significant work before going live.`;
   }
 
   /**
-   * Full evaluation: static analysis + visual evaluation
+   * Full evaluation: static analysis + layout analysis + visual evaluation
    */
   async evaluate(html, restaurantContext, outputDir = null) {
-    // Run static analysis
+    // Run static analysis (basic HTML checks)
     const staticAnalysis = this.analyzeStatic(html);
 
-    // Capture screenshots
-    const screenshots = await this.captureScreenshots(html, outputDir);
+    // Capture screenshots AND run layout analysis (measures actual rendered layout)
+    const { screenshots, layoutAnalysis } = await this.captureScreenshots(html, outputDir);
 
-    // Run visual evaluation
+    // Run AI visual evaluation
     const visualEval = await this.evaluateVisuals(screenshots, restaurantContext);
 
-    // Combine results
+    // Get mobile layout issues (most important for responsive)
+    const mobileLayout = layoutAnalysis.mobile || { score: 100, issues: [] };
+
+    // Combine scores: static (20%) + layout (30%) + visual (50%)
     const combinedScore = Math.round(
-      (staticAnalysis.score * 0.3) + (visualEval.overallScore * 10 * 0.7)
+      (staticAnalysis.score * 0.2) +
+      (mobileLayout.score * 0.3) +
+      (visualEval.overallScore * 10 * 0.5)
+    );
+
+    // Collect all layout issues from all viewports
+    const layoutIssues = Object.entries(layoutAnalysis).flatMap(([viewport, analysis]) =>
+      (analysis.issues || []).map(issue => ({
+        ...issue,
+        viewport,
+        type: 'layout'
+      }))
     );
 
     return {
       staticAnalysis,
+      layoutAnalysis: {
+        mobile: mobileLayout,
+        tablet: layoutAnalysis.tablet,
+        desktop: layoutAnalysis.desktop
+      },
       visualEvaluation: visualEval,
       combinedScore,
-      passesQualityBar: visualEval.passesQualityBar && staticAnalysis.issues.length === 0,
+      passesQualityBar: visualEval.passesQualityBar &&
+                        staticAnalysis.issues.length === 0 &&
+                        mobileLayout.issues.filter(i => i.severity === 'error').length === 0,
       allIssues: [
         ...staticAnalysis.issues.map(i => ({ type: 'static', severity: 'error', message: i })),
         ...staticAnalysis.warnings.map(w => ({ type: 'static', severity: 'warning', message: w })),
+        ...layoutIssues,
         ...visualEval.criticalIssues.map(i => ({ type: 'visual', severity: 'critical', message: i })),
         ...Object.entries(visualEval.scores)
           .filter(([_, v]) => v.score < 6)
@@ -321,6 +349,28 @@ A score below 6 means it needs significant work before going live.`;
         lines.push(`${i + 1}. ${issue}`);
       });
       lines.push('');
+    }
+
+    // Add layout issues from actual rendered measurement
+    if (evaluation.layoutAnalysis) {
+      const mobileErrors = evaluation.layoutAnalysis.mobile?.issues?.filter(i => i.severity === 'error') || [];
+      const mobileWarnings = evaluation.layoutAnalysis.mobile?.issues?.filter(i => i.severity === 'warning') || [];
+
+      if (mobileErrors.length > 0) {
+        lines.push('MOBILE LAYOUT ERRORS (measured from actual render):');
+        mobileErrors.forEach(issue => {
+          lines.push(`- ${issue.message}`);
+        });
+        lines.push('');
+      }
+
+      if (mobileWarnings.length > 0) {
+        lines.push('LAYOUT WARNINGS:');
+        mobileWarnings.slice(0, 5).forEach(issue => {
+          lines.push(`- ${issue.message}`);
+        });
+        lines.push('');
+      }
     }
 
     if (evaluation.staticAnalysis.issues.length > 0) {
