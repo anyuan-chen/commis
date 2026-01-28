@@ -10,6 +10,8 @@ import { getStoredTokens, storeTokens } from '../routes/youtube-auth.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
 import { ImageGenerator } from '../services/image-generator.js';
 import { WebsiteGenerator } from '../services/website-generator.js';
+import { IterativeWebsiteGenerator, evaluateExistingWebsite } from '../services/iterative-generator.js';
+import { UIEvaluator } from '../services/ui-evaluator.js';
 import { CloudflareDeployer } from '../services/cloudflare-deploy.js';
 import { VideoProcessor } from '../services/video-processor.js';
 import { GeminiVision } from '../services/gemini-vision.js';
@@ -287,13 +289,98 @@ export const tools = [
 
   {
     name: 'create_website',
-    description: 'Generate and deploy a website for a restaurant to Cloudflare Pages. Returns the live website URL.',
+    description: 'Generate and deploy a website for a restaurant to Cloudflare Pages. Uses iterative refinement with visual evaluation to ensure high quality. Returns the live website URL and quality metrics.',
     inputSchema: {
       type: 'object',
       properties: {
         restaurantId: {
           type: 'string',
           description: 'ID of the restaurant to create website for'
+        },
+        useIterative: {
+          type: 'boolean',
+          description: 'Use iterative refinement with visual evaluation (default: true). Set to false for quick generation without quality checks.'
+        },
+        maxIterations: {
+          type: 'number',
+          description: 'Maximum iterations for refinement (default: 3). Higher = better quality but slower.'
+        },
+        qualityThreshold: {
+          type: 'number',
+          description: 'Quality score threshold 0-100 (default: 65). Higher = stricter quality requirements.'
+        },
+        debugMode: {
+          type: 'boolean',
+          description: 'Save debug info (screenshots, evaluations) for each iteration'
+        }
+      },
+      required: ['restaurantId']
+    },
+    handler: async ({ restaurantId, useIterative = true, maxIterations = 3, qualityThreshold = 65, debugMode = false }) => {
+      const restaurant = RestaurantModel.getById(restaurantId);
+      if (!restaurant) {
+        throw new Error(`Restaurant not found: ${restaurantId}`);
+      }
+
+      let websitePath, materialId, generationResult;
+
+      if (useIterative) {
+        // Use iterative generator with visual evaluation
+        const generator = new IterativeWebsiteGenerator({
+          maxIterations,
+          qualityThreshold,
+          debugMode
+        });
+        generationResult = await generator.generate(restaurantId);
+        websitePath = generationResult.path;
+        materialId = generationResult.materialId;
+      } else {
+        // Use simple one-shot generation
+        const websiteGenerator = new WebsiteGenerator();
+        const result = await websiteGenerator.generate(restaurantId);
+        websitePath = result.path;
+        materialId = result.materialId;
+      }
+
+      // Deploy to Cloudflare
+      const deployer = new CloudflareDeployer();
+      const { url: websiteUrl, projectName } = await deployer.deploy(restaurantId);
+
+      const response = {
+        websiteUrl,
+        projectName,
+        localPath: websitePath,
+        materialId,
+        restaurantName: restaurant.name
+      };
+
+      // Add quality metrics if iterative was used
+      if (generationResult) {
+        response.qualityMetrics = {
+          iterations: generationResult.iterations,
+          finalScore: generationResult.finalScore,
+          passedQualityBar: generationResult.passed,
+          evaluation: generationResult.evaluation ? {
+            visualScores: generationResult.evaluation.visualEvaluation?.scores,
+            staticIssues: generationResult.evaluation.staticAnalysis?.issues,
+            improvements: generationResult.evaluation.improvements
+          } : null
+        };
+      }
+
+      return response;
+    }
+  },
+
+  {
+    name: 'evaluate_website',
+    description: 'Evaluate an existing restaurant website for UI/UX quality. Takes screenshots at multiple viewports and uses AI to analyze visual design, accessibility, and usability.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        restaurantId: {
+          type: 'string',
+          description: 'ID of the restaurant whose website to evaluate'
         }
       },
       required: ['restaurantId']
@@ -304,21 +391,101 @@ export const tools = [
         throw new Error(`Restaurant not found: ${restaurantId}`);
       }
 
-      // Generate website
-      const websiteGenerator = new WebsiteGenerator();
-      const { path: websitePath, materialId } = await websiteGenerator.generate(restaurantId);
-
-      // Deploy to Cloudflare
-      const deployer = new CloudflareDeployer();
-      const { url: websiteUrl, projectName } = await deployer.deploy(restaurantId);
+      const results = await evaluateExistingWebsite(restaurantId);
 
       return {
-        websiteUrl,
-        projectName,
-        localPath: websitePath,
-        materialId,
-        restaurantName: restaurant.name
+        restaurantName: restaurant.name,
+        indexPage: results.index.error ? { error: results.index.error } : {
+          combinedScore: results.index.combinedScore,
+          passesQualityBar: results.index.passesQualityBar,
+          visualScores: results.index.visualEvaluation?.scores,
+          criticalIssues: results.index.visualEvaluation?.criticalIssues,
+          staticIssues: results.index.staticAnalysis?.issues,
+          improvements: results.index.improvements
+        },
+        menuPage: results.menu.error ? { error: results.menu.error } : {
+          combinedScore: results.menu.combinedScore,
+          passesQualityBar: results.menu.passesQualityBar,
+          visualScores: results.menu.visualEvaluation?.scores,
+          criticalIssues: results.menu.visualEvaluation?.criticalIssues,
+          staticIssues: results.menu.staticAnalysis?.issues,
+          improvements: results.menu.improvements
+        },
+        overallAssessment: {
+          averageScore: Math.round(
+            ((results.index.combinedScore || 0) + (results.menu.combinedScore || 0)) / 2
+          ),
+          recommendation: (results.index.passesQualityBar && results.menu.passesQualityBar)
+            ? 'Website meets quality standards'
+            : 'Website needs improvements - consider regenerating with higher quality threshold'
+        }
       };
+    }
+  },
+
+  {
+    name: 'regenerate_website',
+    description: 'Regenerate a restaurant website with iterative refinement. Use this after evaluate_website reveals issues. Keeps the same restaurant data but creates new HTML/CSS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        restaurantId: {
+          type: 'string',
+          description: 'ID of the restaurant whose website to regenerate'
+        },
+        maxIterations: {
+          type: 'number',
+          description: 'Maximum iterations for refinement (default: 3)'
+        },
+        qualityThreshold: {
+          type: 'number',
+          description: 'Quality score threshold 0-100 (default: 70). Set higher for better quality.'
+        },
+        deploy: {
+          type: 'boolean',
+          description: 'Deploy to Cloudflare after regeneration (default: true)'
+        }
+      },
+      required: ['restaurantId']
+    },
+    handler: async ({ restaurantId, maxIterations = 3, qualityThreshold = 70, deploy = true }) => {
+      const restaurant = RestaurantModel.getById(restaurantId);
+      if (!restaurant) {
+        throw new Error(`Restaurant not found: ${restaurantId}`);
+      }
+
+      // Regenerate with iterative generator
+      const generator = new IterativeWebsiteGenerator({
+        maxIterations,
+        qualityThreshold,
+        debugMode: true // Always save debug info for regeneration
+      });
+
+      const result = await generator.generate(restaurantId);
+
+      const response = {
+        restaurantName: restaurant.name,
+        localPath: result.path,
+        materialId: result.materialId,
+        iterations: result.iterations,
+        finalScore: result.finalScore,
+        passedQualityBar: result.passed,
+        evaluation: result.evaluation ? {
+          visualScores: result.evaluation.visualEvaluation?.scores,
+          criticalIssues: result.evaluation.visualEvaluation?.criticalIssues,
+          improvements: result.evaluation.improvements
+        } : null
+      };
+
+      // Deploy if requested
+      if (deploy) {
+        const deployer = new CloudflareDeployer();
+        const { url: websiteUrl, projectName } = await deployer.deploy(restaurantId);
+        response.websiteUrl = websiteUrl;
+        response.projectName = projectName;
+      }
+
+      return response;
     }
   },
 

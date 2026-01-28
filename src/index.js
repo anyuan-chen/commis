@@ -18,6 +18,7 @@ import debugRoutes from './routes/debug.js';
 import chatRoutes from './routes/chat.js';
 import reviewsRoutes from './routes/reviews.js';
 import analyticsRoutes from './routes/analytics.js';
+import evaluateRoutes from './routes/evaluate.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 import { setupMcp } from './mcp/index.js';
 import { startDigestScheduler } from './jobs/digest-scheduler.js';
@@ -86,6 +87,7 @@ app.use('/api/debug', debugRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/evaluate', evaluateRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -158,6 +160,11 @@ server.listen(PORT, () => {
 ║    GET  /api/analytics/optimizer/:id - Optimizer status    ║
 ║    POST /api/analytics/optimizer/:id/toggle - Enable/disable║
 ║    POST /api/analytics/optimizer/:id/run - Trigger optimize║
+║                                                            ║
+║  UI Evaluation:                                            ║
+║    GET  /api/evaluate/:id         - Evaluate website UI    ║
+║    POST /api/evaluate/:id/regenerate - Regenerate w/ evals ║
+║    GET  /api/evaluate/:id/debug   - View iteration debug   ║
 ║                                                            ║
 ║  Debug:                                                    ║
 ║    GET  /debug.html               - Pipeline debug viewer  ║
