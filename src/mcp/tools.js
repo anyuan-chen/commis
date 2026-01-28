@@ -4,7 +4,7 @@ import { pipeline } from 'stream/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { ShortsJobModel } from '../db/models/shorts-job.js';
-import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewModel, ReviewPlatformModel, ReviewDigestModel } from '../db/models/index.js';
+import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewDigestModel } from '../db/models/index.js';
 import { processShort } from '../routes/shorts.js';
 import { getStoredTokens, storeTokens } from '../routes/youtube-auth.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
@@ -15,8 +15,8 @@ import { VideoProcessor } from '../services/video-processor.js';
 import { GeminiVision } from '../services/gemini-vision.js';
 import { adRecommender } from '../services/ad-recommender.js';
 import { WebsiteUpdater } from '../services/website-updater.js';
-import { reviewAggregator } from '../services/review-aggregator.js';
 import { digestGenerator } from '../services/digest-generator.js';
+import { abOptimizer } from '../services/ab-optimizer.js';
 
 const youtubeUploader = new YouTubeUploader();
 
@@ -200,7 +200,7 @@ export const tools = [
 
   {
     name: 'generate_graphic',
-    description: 'Generate an AI graphic for a restaurant. Can create social media posts, menu graphics, promotional materials, or custom images.',
+    description: 'Generate an AI graphic for a restaurant. Can create social media posts, menu graphics, promotional materials, or custom images. Use "imagen" model for photorealistic food shots and artistic images; use "gemini" for graphics with text overlays.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -219,13 +219,18 @@ export const tools = [
         },
         type: {
           type: 'string',
-          enum: ['custom', 'social', 'menu', 'promo'],
-          description: 'Type of graphic to generate (default: custom)'
+          enum: ['custom', 'social', 'menu', 'promo', 'creative'],
+          description: 'Type of graphic: custom/social/menu/promo use Gemini, "creative" uses Imagen 3 for photorealistic images'
+        },
+        model: {
+          type: 'string',
+          enum: ['gemini', 'imagen'],
+          description: 'AI model: "gemini" for text-heavy graphics, "imagen" for photorealistic/artistic images (default: auto-selected based on type)'
         }
       },
       required: ['restaurantId', 'prompt']
     },
-    handler: async ({ restaurantId, prompt, platform = 'instagram', type = 'custom' }) => {
+    handler: async ({ restaurantId, prompt, platform = 'instagram', type = 'custom', model = null }) => {
       const restaurant = RestaurantModel.getById(restaurantId);
       if (!restaurant) {
         throw new Error(`Restaurant not found: ${restaurantId}`);
@@ -233,8 +238,22 @@ export const tools = [
 
       const generator = new ImageGenerator();
 
+      const aspectRatios = {
+        instagram: '1:1',
+        facebook: '16:9',
+        twitter: '16:9',
+        story: '9:16'
+      };
+
       let result;
-      if (type === 'social') {
+
+      // Creative type or explicit imagen model = use Imagen 3
+      if (type === 'creative' || model === 'imagen') {
+        result = await generator.generateCreative(prompt, {
+          restaurantId,
+          aspectRatio: aspectRatios[platform] || '1:1'
+        });
+      } else if (type === 'social') {
         result = await generator.generateSocialPost(restaurantId, {
           platform,
           customText: prompt
@@ -249,24 +268,19 @@ export const tools = [
         });
       } else {
         // Custom generation with restaurant context
-        const aspectRatios = {
-          instagram: '1:1',
-          facebook: '16:9',
-          twitter: '16:9',
-          story: '9:16'
-        };
-
         const enhancedPrompt = `For restaurant "${restaurant.name}" (${restaurant.cuisine_type || 'restaurant'}), brand color ${restaurant.primary_color || '#2563eb'}:\n\n${prompt}`;
 
         result = await generator.generate(enhancedPrompt, {
-          aspectRatio: aspectRatios[platform] || '1:1'
+          aspectRatio: aspectRatios[platform] || '1:1',
+          model: model || 'gemini'
         });
       }
 
       return {
         imageUrl: `/images/${result.path.split('/').pop()}`,
         imagePath: result.path,
-        restaurantName: restaurant.name
+        restaurantName: restaurant.name,
+        model: result.model || 'gemini'
       };
     }
   },
@@ -541,40 +555,6 @@ export const tools = [
   },
 
   {
-    name: 'fetch_reviews',
-    description: 'Pull latest reviews from linked platforms (Google Places). Reviews are deduplicated and stored in the database.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        restaurantId: {
-          type: 'string',
-          description: 'ID of the restaurant to fetch reviews for'
-        }
-      },
-      required: ['restaurantId']
-    },
-    handler: async ({ restaurantId }) => {
-      const restaurant = RestaurantModel.getById(restaurantId);
-      if (!restaurant) {
-        throw new Error(`Restaurant not found: ${restaurantId}`);
-      }
-
-      if (!restaurant.reviews_enabled) {
-        throw new Error('Review aggregation not enabled. Enable it first via /api/reviews/:id/enable');
-      }
-
-      const results = await reviewAggregator.fetchAll(restaurantId);
-
-      return {
-        restaurantName: restaurant.name,
-        fetched: results.total,
-        google: results.google.length,
-        errors: results.errors
-      };
-    }
-  },
-
-  {
     name: 'generate_review_digest',
     description: 'Create an AI-powered digest analyzing reviews over a time period. Includes sentiment summary, common complaints, praise themes, and suggested actions.',
     inputSchema: {
@@ -646,39 +626,6 @@ export const tools = [
   },
 
   {
-    name: 'link_review_platform',
-    description: 'Connect a Google Place ID to a restaurant for review aggregation.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        restaurantId: {
-          type: 'string',
-          description: 'ID of the restaurant to link'
-        },
-        googlePlaceId: {
-          type: 'string',
-          description: 'Google Place ID to link'
-        }
-      },
-      required: ['restaurantId', 'googlePlaceId']
-    },
-    handler: async ({ restaurantId, googlePlaceId }) => {
-      const restaurant = RestaurantModel.getById(restaurantId);
-      if (!restaurant) {
-        throw new Error(`Restaurant not found: ${restaurantId}`);
-      }
-
-      const platforms = ReviewPlatformModel.linkGoogle(restaurantId, googlePlaceId);
-
-      return {
-        restaurantName: restaurant.name,
-        linked: true,
-        platforms
-      };
-    }
-  },
-
-  {
     name: 'get_latest_digest',
     description: 'Get the most recent review digest for a restaurant without generating a new one. Returns sentiment summary, complaints, praise themes, and suggested actions.',
     inputSchema: {
@@ -713,7 +660,68 @@ export const tools = [
         ...digest
       };
     }
-  }
+  },
+
+  {
+    name: 'get_optimizer_status',
+    description: 'Get the A/B testing optimizer status for a restaurant. Shows active experiment, recent history, and performance metrics.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        restaurantId: {
+          type: 'string',
+          description: 'ID of the restaurant to get optimizer status for'
+        }
+      },
+      required: ['restaurantId']
+    },
+    handler: async ({ restaurantId }) => {
+      const restaurant = RestaurantModel.getById(restaurantId);
+      if (!restaurant) {
+        throw new Error(`Restaurant not found: ${restaurantId}`);
+      }
+
+      const status = abOptimizer.getStatus(restaurantId);
+
+      return {
+        restaurantName: restaurant.name,
+        ...status
+      };
+    }
+  },
+
+  {
+    name: 'get_website_analytics',
+    description: 'Get website analytics for a restaurant including pageviews, conversions, scroll depth, time on page, and click data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        restaurantId: {
+          type: 'string',
+          description: 'ID of the restaurant to get analytics for'
+        },
+        days: {
+          type: 'number',
+          description: 'Number of days to analyze (default: 14)'
+        }
+      },
+      required: ['restaurantId']
+    },
+    handler: async ({ restaurantId, days = 14 }) => {
+      const restaurant = RestaurantModel.getById(restaurantId);
+      if (!restaurant) {
+        throw new Error(`Restaurant not found: ${restaurantId}`);
+      }
+
+      const analytics = abOptimizer.getAnalytics(restaurantId, days);
+
+      return {
+        restaurantName: restaurant.name,
+        ...analytics
+      };
+    }
+  },
+
 ];
 
 /**

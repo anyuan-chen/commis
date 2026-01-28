@@ -10,7 +10,7 @@ const fileManager = new GoogleAIFileManager(config.geminiApiKey);
 
 export class VoiceoverGenerator {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   }
 
   /**

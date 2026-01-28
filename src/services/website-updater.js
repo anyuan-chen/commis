@@ -14,7 +14,7 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
  */
 export class WebsiteUpdater {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   }
 
   /**
@@ -349,6 +349,135 @@ Preserve exact indentation and formatting style of the original.`;
     await fs.mkdir(outputDir, { recursive: true });
     const formatted = await this.formatHTML(html);
     await fs.writeFile(menuPath, formatted);
+  }
+
+  /**
+   * Generate a variant-specific HTML file for A/B testing
+   * Does NOT modify the original - creates a separate variant file
+   */
+  async generateVariant(restaurantId, variantId, prompt) {
+    const restaurant = RestaurantModel.getFullData(restaurantId);
+    if (!restaurant) {
+      throw new Error(`Restaurant not found: ${restaurantId}`);
+    }
+
+    // Step 1: Classify
+    const classification = await this.classifyRequest(prompt, restaurant);
+
+    // Step 2: SQL if needed (this affects the database, so be careful)
+    // For A/B tests, we typically DON'T want to change database - just HTML
+    // Skip SQL for variant generation to keep data consistent
+
+    // Generate variant of index.html
+    const indexHTML = await this.readHTML(restaurantId);
+    const indexChunks = await this.identifyChunks(prompt, indexHTML, classification);
+    let variantIndex = indexHTML;
+    for (const chunk of indexChunks) {
+      variantIndex = await this.regenerateChunk(variantIndex, chunk, prompt, restaurant);
+    }
+    await this.writeVariantHTML(restaurantId, variantId, 'index.html', variantIndex);
+
+    // Generate variant of menu.html if it exists
+    const menuHTML = await this.readMenuHTML(restaurantId);
+    if (menuHTML) {
+      const menuChunks = await this.identifyChunks(prompt, menuHTML, classification);
+      let variantMenu = menuHTML;
+      for (const chunk of menuChunks) {
+        variantMenu = await this.regenerateChunk(variantMenu, chunk, prompt, restaurant);
+      }
+      await this.writeVariantHTML(restaurantId, variantId, 'menu.html', variantMenu);
+    }
+
+    return {
+      success: true,
+      variantId,
+      classification,
+      chunksModified: {
+        index: indexChunks.length,
+        menu: menuHTML ? indexChunks.length : 0
+      }
+    };
+  }
+
+  /**
+   * Write variant-specific HTML file
+   */
+  async writeVariantHTML(restaurantId, variantId, filename, html) {
+    const outputDir = join(config.paths.websites, restaurantId, 'variants', variantId);
+    const filePath = join(outputDir, filename);
+
+    await fs.mkdir(outputDir, { recursive: true });
+    const formatted = await this.formatHTML(html);
+    await fs.writeFile(filePath, formatted);
+  }
+
+  /**
+   * Delete variant files (when experiment concludes)
+   */
+  async deleteVariant(restaurantId, variantId) {
+    const variantDir = join(config.paths.websites, restaurantId, 'variants', variantId);
+
+    try {
+      await fs.rm(variantDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (error) {
+      console.warn(`Failed to delete variant ${variantId}:`, error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Promote variant to main (copy variant files to main)
+   */
+  async promoteVariant(restaurantId, variantId) {
+    const variantDir = join(config.paths.websites, restaurantId, 'variants', variantId);
+    const mainDir = join(config.paths.websites, restaurantId);
+
+    try {
+      // Copy variant index.html to main
+      const variantIndex = join(variantDir, 'index.html');
+      const mainIndex = join(mainDir, 'index.html');
+
+      try {
+        const content = await fs.readFile(variantIndex, 'utf-8');
+        await fs.writeFile(mainIndex, content);
+      } catch (e) {
+        // Variant index doesn't exist, skip
+      }
+
+      // Copy variant menu.html to main if exists
+      const variantMenu = join(variantDir, 'menu.html');
+      const mainMenu = join(mainDir, 'menu.html');
+
+      try {
+        const content = await fs.readFile(variantMenu, 'utf-8');
+        await fs.writeFile(mainMenu, content);
+      } catch (e) {
+        // Variant menu doesn't exist, skip
+      }
+
+      // Clean up variant directory
+      await this.deleteVariant(restaurantId, variantId);
+
+      return { success: true };
+    } catch (error) {
+      console.error(`Failed to promote variant ${variantId}:`, error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Check if a variant exists
+   */
+  async variantExists(restaurantId, variantId) {
+    const variantPath = join(config.paths.websites, restaurantId, 'variants', variantId, 'index.html');
+
+    try {
+      await fs.access(variantPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

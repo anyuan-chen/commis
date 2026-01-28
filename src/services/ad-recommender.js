@@ -10,7 +10,7 @@ import { getStoredGoogleAdsTokens } from '../routes/google-ads-auth.js';
 export class AdRecommender {
   constructor() {
     this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   }
 
   /**

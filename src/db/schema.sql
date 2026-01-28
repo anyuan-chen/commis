@@ -226,3 +226,95 @@ CREATE TABLE IF NOT EXISTS digest_preferences (
 );
 
 CREATE INDEX IF NOT EXISTS idx_digest_prefs_restaurant ON digest_preferences(restaurant_id);
+
+-- A/B Testing: Experiments
+CREATE TABLE IF NOT EXISTS experiments (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL,
+  hypothesis TEXT NOT NULL,
+  change_type TEXT, -- 'cta', 'hero', 'layout', 'copy', 'color', 'menu'
+  status TEXT DEFAULT 'pending', -- 'pending', 'running', 'paused', 'concluded', 'applied'
+  winning_variant_id TEXT,
+  pause_reason TEXT, -- Reason if paused (anomaly, manual, etc.)
+  baseline_conversion_rate REAL, -- Historical rate before experiment
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiments_restaurant ON experiments(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
+
+-- A/B Testing: Experiment Variants
+CREATE TABLE IF NOT EXISTS experiment_variants (
+  id TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL,
+  name TEXT NOT NULL, -- 'control', 'variant_a', 'variant_b'
+  is_control INTEGER DEFAULT 0,
+  change_prompt TEXT, -- AI prompt describing the change
+  change_description TEXT, -- Human-readable description
+  visitors INTEGER DEFAULT 0,
+  conversions INTEGER DEFAULT 0,
+  revenue REAL DEFAULT 0, -- Total revenue attributed to this variant
+  traffic_allocation REAL DEFAULT 0.5, -- Traffic percentage (0-1)
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_variants_experiment ON experiment_variants(experiment_id);
+
+-- A/B Testing: Experiment Queue (pre-generated hypotheses)
+CREATE TABLE IF NOT EXISTS experiment_queue (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL,
+  hypothesis TEXT NOT NULL,
+  change_type TEXT,
+  variant_prompt TEXT,
+  variant_description TEXT,
+  priority INTEGER DEFAULT 0, -- Higher = run sooner
+  source TEXT DEFAULT 'ai', -- 'ai', 'learning', 'manual'
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_restaurant ON experiment_queue(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_queue_priority ON experiment_queue(priority DESC);
+
+-- A/B Testing: Analytics Events
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  variant_id TEXT,
+  event_type TEXT NOT NULL, -- 'pageview', 'scroll', 'click', 'time_on_page', 'cart_add', 'order'
+  event_data_json TEXT, -- JSON with event-specific data
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_restaurant ON analytics_events(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_session ON analytics_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_type ON analytics_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics_events(created_at);
+
+-- A/B Testing: Optimizer State per Restaurant
+CREATE TABLE IF NOT EXISTS optimizer_state (
+  id TEXT PRIMARY KEY,
+  restaurant_id TEXT NOT NULL UNIQUE,
+  enabled INTEGER DEFAULT 0,
+  experiments_this_week INTEGER DEFAULT 0,
+  week_start TEXT, -- ISO date of current week start
+  learnings_json TEXT, -- JSON array of past learnings
+  compound_changes_json TEXT, -- JSON array of applied winning changes
+  baseline_metrics_json TEXT, -- JSON with historical conversion/revenue baselines
+  total_experiments INTEGER DEFAULT 0, -- Lifetime experiment count
+  total_revenue_lift REAL DEFAULT 0, -- Cumulative revenue improvement
+  last_optimization_at TEXT,
+  last_digest_at TEXT, -- Last weekly performance digest
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_optimizer_restaurant ON optimizer_state(restaurant_id);

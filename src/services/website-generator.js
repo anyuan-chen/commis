@@ -5,12 +5,13 @@ import sharp from 'sharp';
 import prettier from 'prettier';
 import { config } from '../config.js';
 import { RestaurantModel, MaterialModel, NoteModel } from '../db/models/index.js';
+import { analyticsSnippet } from './analytics-snippet.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 export class WebsiteGenerator {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   }
 
   /**
@@ -75,77 +76,76 @@ export class WebsiteGenerator {
     // Get active notes (auto-filters expired ones)
     const activeNotes = NoteModel.getActive(restaurant.id);
 
-    const prompt = `You are a world-class web designer. Generate a multi-page restaurant website.
+    const prompt = `You are an elite web designer known for creating stunning, award-winning restaurant websites. You have complete creative freedom.
 
-RESTAURANT DATA:
+RESTAURANT:
 - Name: ${restaurant.name || 'Restaurant'}
 - Tagline: ${restaurant.tagline || ''}
 - Description: ${restaurant.description || ''}
-- Cuisine Type: ${restaurant.cuisine_type || 'Restaurant'}
+- Cuisine: ${restaurant.cuisine_type || 'Restaurant'}
+- Vibe: ${restaurant.style_theme || 'modern'}
+- Brand Color: ${restaurant.primary_color || '#2563eb'}
 - Address: ${restaurant.address || ''}
 - Phone: ${restaurant.phone || ''}
 - Email: ${restaurant.email || ''}
 - Hours: ${JSON.stringify(restaurant.hours || {})}
-- Style Preference: ${restaurant.style_theme || 'modern'}
-- Brand Color: ${restaurant.primary_color || '#2563eb'}
 
 MENU:
 ${JSON.stringify(menuData, null, 2)}
 
-AVAILABLE PHOTOS (use these exact paths):
+PHOTOS (use these exact paths):
 ${JSON.stringify(photoDescriptions, null, 2)}
 
-${activeNotes.length > 0 ? `SPECIAL NOTES/ANNOUNCEMENTS:
-${activeNotes.map(n => `- ${n.content}`).join('\n')}
-` : ''}
+${activeNotes.length > 0 ? `ANNOUNCEMENTS: ${activeNotes.map(n => n.content).join(' | ')}` : ''}
 
-GENERATE TWO HTML FILES:
+CREATE TWO FILES:
 
 ===FILE:index.html===
-Landing page with: Hero, About, Gallery (if photos), Contact/Hours, Footer
-- Link to menu.html with a prominent "View Menu" or "Order Now" button
-- In Contact section, include <div id="google-map"></div> for map embed
+A stunning landing page that captures the restaurant's soul.
+- Must include: <div id="google-map"></div> somewhere in contact area
+- Link to menu.html with compelling CTA
 
 ===FILE:menu.html===
-Full menu page with ordering:
-- Navigation back to index.html
-- Full menu organized by category
-- Each item needs: name, description, price, Add to Cart button
-- Add to Cart buttons: class="add-to-cart-btn" with data-item-id, data-name, data-price attributes
+Beautiful menu with ordering. Each item needs:
+<button class="add-to-cart-btn" data-item-id="[unique]" data-name="[name]" data-price="[price]">Add to Cart</button>
 
-DESIGN REQUIREMENTS:
-1. Each file is COMPLETE with embedded CSS in <style> tags
-2. Mobile-first, fully responsive
-3. Design matches the cuisine type (Italian=warm/elegant, Japanese=minimal/zen, Mexican=vibrant, etc.)
-4. Use Google Fonts that fit the vibe
-5. Brand color as primary accent
-6. Consistent header/footer across both pages
-7. If using hover effects on cards, ensure padding and border-radius so hovers look polished
-8. DO NOT add any JavaScript for cart - it will be injected separately
+DESIGN FREEDOM:
+- Choose any Google Fonts that fit the vibe
+- Create your own color palette based on the brand color
+- Design unique animations and micro-interactions
+- Experiment with layout (asymmetric grids, overlapping elements, creative whitespace)
+- Add CSS-only flourishes (gradients, blend modes, clip-paths, backdrop-filter)
+- Make it feel like a $50k custom website
 
-CART UI STYLING - The cart HTML will be injected automatically. You only need to add CSS for these selectors to match your design:
-- #cart-fab: Floating cart button (fixed bottom-right). Style: background, color, border-radius, shadow
-- #cart-count: Badge showing item count (positioned on cart-fab). Style: background, color
-- #cart-panel: Slide-out panel from right. Style: background, colors, fonts
-- #cart-header, #cart-close: Panel header. Style to match
-- #checkout-btn: Checkout button. Style: background, color, border-radius, hover states
-- .cart-item, .cart-item-name, .cart-item-price: Item rows in cart
-DO NOT generate any cart HTML elements - only include CSS rules for the above selectors in your stylesheet.
+TECHNICAL REQUIREMENTS:
+- All CSS inline in <style> tags (no external files)
+- Fully responsive (mobile-first)
+- Smooth animations with @keyframes and transitions
+- prefers-reduced-motion support
+- Semantic HTML5
+- NO JavaScript (cart JS will be injected)
 
-ANIMATION CLASSES (pre-loaded, just add them):
-- "animate-hero", "animate-hero-delayed" for hero text
-- "animate-fade-up" for sections
-- "animate-scale-in" with "stagger-1", "stagger-2" for cards
-- "hover-press" for buttons, "hover-lift" for cards
+CART ELEMENTS TO STYLE (these IDs will exist, make them beautiful):
+#cart-fab - floating action button (bottom-right)
+#cart-count - item count badge on FAB
+#cart-panel - slide-in panel from right
+#cart-overlay - backdrop behind panel
+#cart-header, #cart-items, #cart-footer - panel sections
+.cart-item, .cart-item-name, .cart-item-price - item rows
+.qty-btn - quantity +/- buttons
+#checkout-btn - checkout CTA
+#cart-toast - "added to cart" notification
 
-OUTPUT FORMAT - Return exactly this structure, no markdown:
+Be bold. Be creative. Make something that would win a design award.
+
+OUTPUT (no markdown, no code fences):
 ===FILE:index.html===
 <!DOCTYPE html>
-...complete index.html...
+...
 </html>
 ===FILE:menu.html===
 <!DOCTYPE html>
-...complete menu.html...
+...
 </html>`;
 
     const result = await this.model.generateContent(prompt);
@@ -166,9 +166,6 @@ OUTPUT FORMAT - Return exactly this structure, no markdown:
         html = '<!DOCTYPE html>\n' + html;
       }
 
-      // Inject animations on all pages
-      html = this.injectAnimations(html);
-
       // Only inject cart on menu.html
       if (filename === 'menu.html') {
         html = this.injectOrderingSystem(html, restaurant.id);
@@ -178,6 +175,9 @@ OUTPUT FORMAT - Return exactly this structure, no markdown:
       if (filename === 'index.html' && restaurant.address && config.google?.mapsApiKey) {
         html = this.injectGoogleMap(html, restaurant.address);
       }
+
+      // Inject analytics tracking on all pages
+      html = this.injectAnalytics(html, restaurant.id);
 
       files[filename] = html;
     }
@@ -268,226 +268,25 @@ OUTPUT FORMAT - Return exactly this structure, no markdown:
   }
 
   /**
-   * Inject animation CSS and Intersection Observer script into generated HTML
-   */
-  injectAnimations(html) {
-    // Animation CSS to inject
-    const animationCSS = `
-<style>
-/* Animation Utilities - Based on Emil Kowalski's best practices */
-:root {
-  --ease-out-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
-  --ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
-  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
-  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out-cubic: cubic-bezier(0.645, 0.045, 0.355, 1);
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
-  --duration-slow: 300ms;
-}
-
-/* Scroll-triggered animations */
-.animate-fade-up { opacity: 0; transform: translateY(20px); transition: opacity var(--duration-slow) var(--ease-out-quart), transform var(--duration-slow) var(--ease-out-quart); }
-.animate-fade-up.is-visible { opacity: 1; transform: translateY(0); }
-.animate-fade-in { opacity: 0; transition: opacity var(--duration-slow) var(--ease-out-cubic); }
-.animate-fade-in.is-visible { opacity: 1; }
-.animate-scale-in { opacity: 0; transform: scale(0.95); transition: opacity var(--duration-normal) var(--ease-out-quart), transform var(--duration-normal) var(--ease-out-quart); }
-.animate-scale-in.is-visible { opacity: 1; transform: scale(1); }
-.animate-slide-left { opacity: 0; transform: translateX(-30px); transition: opacity var(--duration-slow) var(--ease-out-quart), transform var(--duration-slow) var(--ease-out-quart); }
-.animate-slide-left.is-visible { opacity: 1; transform: translateX(0); }
-.animate-slide-right { opacity: 0; transform: translateX(30px); transition: opacity var(--duration-slow) var(--ease-out-quart), transform var(--duration-slow) var(--ease-out-quart); }
-.animate-slide-right.is-visible { opacity: 1; transform: translateX(0); }
-
-/* Stagger delays */
-.stagger-1 { transition-delay: 50ms; }
-.stagger-2 { transition-delay: 100ms; }
-.stagger-3 { transition-delay: 150ms; }
-.stagger-4 { transition-delay: 200ms; }
-.stagger-5 { transition-delay: 250ms; }
-.stagger-6 { transition-delay: 300ms; }
-
-/* Hover effects */
-.hover-press { transition: transform var(--duration-fast) var(--ease-out-cubic); will-change: transform; }
-@media (hover: hover) and (pointer: fine) { .hover-press:hover { transform: scale(1.02); } }
-.hover-press:active { transform: scale(0.97); }
-.hover-lift { transition: transform var(--duration-normal) var(--ease-out-cubic), box-shadow var(--duration-normal) ease; will-change: transform; }
-@media (hover: hover) and (pointer: fine) { .hover-lift:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.15); } }
-.hover-zoom { overflow: hidden; }
-.hover-zoom img { transition: transform var(--duration-slow) var(--ease-out-cubic); will-change: transform; }
-@media (hover: hover) and (pointer: fine) { .hover-zoom:hover img { transform: scale(1.05); } }
-.hover-underline { position: relative; text-decoration: none; }
-.hover-underline::after { content: ''; position: absolute; bottom: -2px; left: 0; width: 100%; height: 2px; background: currentColor; transform: scaleX(0); transform-origin: right; transition: transform var(--duration-normal) var(--ease-out-cubic); }
-@media (hover: hover) and (pointer: fine) { .hover-underline:hover::after { transform: scaleX(1); transform-origin: left; } }
-
-/* Hero animations */
-@keyframes hero-fade-in { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
-.animate-hero { animation: hero-fade-in 800ms var(--ease-out-quint) forwards; }
-.animate-hero-delayed { opacity: 0; animation: hero-fade-in 800ms var(--ease-out-quint) 200ms forwards; }
-.animate-hero-delayed-2 { opacity: 0; animation: hero-fade-in 800ms var(--ease-out-quint) 400ms forwards; }
-
-/* Smooth scroll */
-html { scroll-behavior: smooth; }
-
-/* Reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
-  .animate-fade-up, .animate-fade-in, .animate-scale-in, .animate-slide-left, .animate-slide-right { opacity: 1; transform: none; }
-}
-</style>`;
-
-    // Intersection Observer script to trigger animations
-    const animationScript = `
-<script>
-// Intersection Observer for scroll animations
-document.addEventListener('DOMContentLoaded', function() {
-  const animatedElements = document.querySelectorAll('.animate-fade-up, .animate-fade-in, .animate-scale-in, .animate-slide-left, .animate-slide-right');
-
-  if ('IntersectionObserver' in window) {
-    const observer = new IntersectionObserver(function(entries) {
-      entries.forEach(function(entry) {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('is-visible');
-          observer.unobserve(entry.target);
-        }
-      });
-    }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
-
-    animatedElements.forEach(function(el) { observer.observe(el); });
-  } else {
-    // Fallback for older browsers
-    animatedElements.forEach(function(el) { el.classList.add('is-visible'); });
-  }
-});
-</script>`;
-
-    // Inject CSS before </head>
-    if (html.includes('</head>')) {
-      html = html.replace('</head>', animationCSS + '\n</head>');
-    } else {
-      // If no head tag, inject after doctype
-      html = html.replace(/(<html[^>]*>)/i, '$1\n<head>' + animationCSS + '</head>');
-    }
-
-    // Inject script before </body>
-    if (html.includes('</body>')) {
-      html = html.replace('</body>', animationScript + '\n</body>');
-    } else {
-      // If no body closing tag, append at end
-      html = html.replace('</html>', animationScript + '\n</html>');
-    }
-
-    return html;
-  }
-
-  /**
    * Inject ordering system (cart UI and Stripe checkout)
+   * Only injects minimal HTML structure and JS - Gemini styles everything
    */
   injectOrderingSystem(html, restaurantId) {
-    // Cart CSS - only essential layout/behavior, theming comes from Gemini
+    // Minimal CSS - only z-index and state transitions that JS depends on
+    // All visual styling done by Gemini
     const cartCSS = `
 <style>
-/* Cart - Layout & Behavior Only (theming from page styles) */
-#cart-fab {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  z-index: 1000;
-  cursor: pointer;
-}
-#cart-count {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-}
-#cart-count:empty, #cart-count[data-count="0"] {
-  display: none;
-}
-#cart-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1001;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.3s ease, visibility 0.3s ease;
-}
-#cart-overlay.open {
-  opacity: 1;
-  visibility: visible;
-}
-#cart-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  height: 100%;
-  z-index: 1002;
-  transform: translateX(100%);
-  transition: transform 0.3s cubic-bezier(0.23, 1, 0.32, 1);
-}
-#cart-panel.open {
-  transform: translateX(0);
-}
-#cart-items {
-  flex: 1;
-  overflow-y: auto;
-}
-.cart-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-.cart-item-info {
-  flex: 1;
-}
-.cart-item-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.qty-btn {
-  cursor: pointer;
-}
-#checkout-btn {
-  width: 100%;
-  cursor: pointer;
-}
-#checkout-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Add to Cart Button */
-.add-to-cart-btn {
-  cursor: pointer;
-  transition: transform 0.15s ease;
-}
-.add-to-cart-btn:active {
-  transform: scale(0.97);
-}
-
-/* Toast notification */
-#cart-toast {
-  position: fixed;
-  bottom: 100px;
-  right: 24px;
-  padding: 12px 20px;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  z-index: 1003;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-  pointer-events: none;
-}
-#cart-toast.show {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-@media (max-width: 480px) {
-  #cart-panel {
-    max-width: 100%;
-  }
-}
+/* Cart - Functional CSS only (visual styling by Gemini) */
+#cart-fab { position: fixed; bottom: 24px; right: 24px; z-index: 1000; cursor: pointer; }
+#cart-count:empty, #cart-count[data-count="0"] { display: none; }
+#cart-overlay { position: fixed; inset: 0; z-index: 1001; opacity: 0; visibility: hidden; transition: opacity 0.3s, visibility 0.3s; }
+#cart-overlay.open { opacity: 1; visibility: visible; }
+#cart-panel { position: fixed; top: 0; right: 0; height: 100%; z-index: 1002; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.23, 1, 0.32, 1); }
+#cart-panel.open { transform: translateX(0); }
+#cart-items { flex: 1; overflow-y: auto; }
+#checkout-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+#cart-toast { position: fixed; bottom: 100px; right: 24px; z-index: 1003; opacity: 0; transform: translateY(10px); transition: opacity 0.3s, transform 0.3s; pointer-events: none; }
+#cart-toast.show { opacity: 1; transform: translateY(0); }
 </style>`;
 
     // Cart HTML
@@ -772,6 +571,23 @@ document.addEventListener('DOMContentLoaded', function() {
     // Inject HTML and JS before </body>
     if (html.includes('</body>')) {
       html = html.replace('</body>', cartHTML + '\n' + cartJS + '\n</body>');
+    }
+
+    return html;
+  }
+
+  /**
+   * Inject analytics tracking snippet
+   */
+  injectAnalytics(html, restaurantId) {
+    const snippet = analyticsSnippet.generate(restaurantId);
+
+    // Inject before </body>
+    if (html.includes('</body>')) {
+      html = html.replace('</body>', snippet + '\n</body>');
+    } else {
+      // If no body closing tag, append at end
+      html = html.replace('</html>', snippet + '\n</html>');
     }
 
     return html;

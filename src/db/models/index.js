@@ -8,3 +8,8 @@ export { ShortsJobModel } from './shorts-job.js';
 export { OrderModel } from './order.js';
 export { ReviewModel, ReviewPlatformModel, DigestPreferencesModel } from './review.js';
 export { ReviewDigestModel } from './review-digest.js';
+export { ExperimentModel } from './experiment.js';
+export { VariantModel } from './variant.js';
+export { AnalyticsEventModel } from './analytics-event.js';
+export { OptimizerStateModel } from './optimizer-state.js';
+export { ExperimentQueueModel } from './experiment-queue.js';

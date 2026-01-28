@@ -17,9 +17,12 @@ import ordersRoutes from './routes/orders.js';
 import debugRoutes from './routes/debug.js';
 import chatRoutes from './routes/chat.js';
 import reviewsRoutes from './routes/reviews.js';
+import analyticsRoutes from './routes/analytics.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 import { setupMcp } from './mcp/index.js';
 import { startDigestScheduler } from './jobs/digest-scheduler.js';
+import { startOptimizerScheduler } from './jobs/optimizer-scheduler.js';
+import { variantServerMiddleware } from './middleware/variant-server.js';
 
 // Create Express app
 const app = express();
@@ -62,7 +65,8 @@ app.use((req, res, next) => {
 // Static files
 app.use(express.static(config.paths.public));
 
-// Serve generated website previews
+// Serve generated website previews with A/B variant support
+app.use(variantServerMiddleware);
 app.use('/preview-static', express.static(config.paths.websites));
 
 // Serve uploaded images
@@ -81,6 +85,7 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/debug', debugRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/reviews', reviewsRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -101,6 +106,9 @@ app.use((err, req, res, next) => {
 
 // Start digest scheduler for review aggregation
 startDigestScheduler();
+
+// Start A/B optimizer scheduler
+startOptimizerScheduler();
 
 // Start server
 const PORT = config.port;
@@ -143,6 +151,13 @@ server.listen(PORT, () => {
 ║    POST /api/reviews/:id/link-google - Link Place ID       ║
 ║    GET  /api/reviews/:id/digests  - List digests           ║
 ║    POST /api/reviews/:id/digests/generate - Generate digest║
+║                                                            ║
+║  A/B Testing & Analytics:                                  ║
+║    POST /api/analytics/event      - Track events           ║
+║    GET  /api/analytics/metrics/:id - Website metrics       ║
+║    GET  /api/analytics/optimizer/:id - Optimizer status    ║
+║    POST /api/analytics/optimizer/:id/toggle - Enable/disable║
+║    POST /api/analytics/optimizer/:id/run - Trigger optimize║
 ║                                                            ║
 ║  Debug:                                                    ║
 ║    GET  /debug.html               - Pipeline debug viewer  ║
