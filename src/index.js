@@ -120,7 +120,7 @@ const PORT = config.port;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║                       Pique Server                         ║
+║                       Commis Server                         ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Server running at: http://localhost:${PORT}                  ║
 ║  API endpoints:                                            ║

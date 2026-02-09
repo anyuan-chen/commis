@@ -139,7 +139,7 @@ router.get('/variant/:restaurantId', async (req, res) => {
 
     // Parse variant from cookie
     const cookies = parseCookies(req.headers.cookie || '');
-    const variantId = cookies[`pique_variant_${restaurantId}`];
+    const variantId = cookies[`commis_variant_${restaurantId}`];
 
     if (!variantId) {
       return res.json({ variantId: null });
@@ -388,7 +388,7 @@ router.post('/record-conversion/:restaurantId', async (req, res) => {
     let effectiveVariantId = variantId;
     if (!effectiveVariantId) {
       const cookies = parseCookies(req.headers.cookie || '');
-      effectiveVariantId = cookies[`pique_variant_${restaurantId}`] || null;
+      effectiveVariantId = cookies[`commis_variant_${restaurantId}`] || null;
     }
 
     // Record the order event

@@ -15,7 +15,7 @@ export class AnalyticsSnippet {
    */
   generate(restaurantId) {
     return `
-<!-- Pique Analytics -->
+<!-- Commis Analytics -->
 <script>
 (function() {
   const RESTAURANT_ID = '${restaurantId}';
@@ -24,17 +24,17 @@ export class AnalyticsSnippet {
 
   // Session management
   function getSessionId() {
-    let sessionId = sessionStorage.getItem('pique_session');
+    let sessionId = sessionStorage.getItem('commis_session');
     if (!sessionId) {
       sessionId = 'ses_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-      sessionStorage.setItem('pique_session', sessionId);
+      sessionStorage.setItem('commis_session', sessionId);
     }
     return sessionId;
   }
 
   // Variant cookie management (cookie is set server-side by variant middleware)
   function getVariantId() {
-    const match = document.cookie.match(/pique_variant_${restaurantId}=([^;]+)/);
+    const match = document.cookie.match(/commis_variant_${restaurantId}=([^;]+)/);
     return match ? match[1] : null;
   }
 
@@ -80,7 +80,7 @@ export class AnalyticsSnippet {
         });
       }
     } catch (e) {
-      console.debug('Pique: event flush failed', e);
+      console.debug('Commis: event flush failed', e);
     }
   }
 
@@ -146,7 +146,7 @@ export class AnalyticsSnippet {
 
   // Order tracking via postMessage (from checkout iframe/redirect)
   function handleOrderMessage(event) {
-    if (event.data && event.data.type === 'pique_order') {
+    if (event.data && event.data.type === 'commis_order') {
       track('order', {
         orderId: event.data.orderId,
         total: event.data.total,
@@ -213,7 +213,7 @@ export class AnalyticsSnippet {
   }
 
   // Expose for manual tracking
-  window.piqueAnalytics = { track: track, flush: flushEvents };
+  window.commisAnalytics = { track: track, flush: flushEvents };
 })();
 </script>`;
   }
@@ -225,7 +225,7 @@ export class AnalyticsSnippet {
   generateCSS() {
     return `
 <style>
-/* Pique Analytics - No visible UI elements */
+/* Commis Analytics - No visible UI elements */
 </style>`;
   }
 }

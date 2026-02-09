@@ -1,5 +1,5 @@
 /**
- * Sanity check tests for Pique
+ * Sanity check tests for Commis
  * Run with: node --test tests/sanity.test.js
  */
 

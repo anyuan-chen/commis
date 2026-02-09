@@ -8,7 +8,7 @@ if (!existsSync(config.paths.db)) {
   mkdirSync(config.paths.db, { recursive: true });
 }
 
-const dbPath = join(config.paths.db, 'pique.db');
+const dbPath = join(config.paths.db, 'commis.db');
 
 // Initialize SQL.js
 const SQL = await initSqlJs();

@@ -95,7 +95,7 @@ export async function variantServerMiddleware(req, res, next) {
   try {
     // Check for variant cookie
     const cookies = parseCookies(req.headers.cookie || '');
-    let variantId = cookies[`pique_variant_${restaurantId}`];
+    let variantId = cookies[`commis_variant_${restaurantId}`];
 
     // If no variant assigned, try to assign one
     if (!variantId) {
@@ -105,7 +105,7 @@ export async function variantServerMiddleware(req, res, next) {
 
         // Set cookie for future requests
         const cookieExpires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        res.cookie(`pique_variant_${restaurantId}`, variantId, {
+        res.cookie(`commis_variant_${restaurantId}`, variantId, {
           expires: cookieExpires,
           path: '/',
           sameSite: 'Lax'
@@ -196,7 +196,7 @@ export function getVariantHandler(req, res) {
   const { restaurantId } = req.params;
 
   const cookies = parseCookies(req.headers.cookie || '');
-  const variantId = cookies[`pique_variant_${restaurantId}`];
+  const variantId = cookies[`commis_variant_${restaurantId}`];
 
   if (variantId) {
     const variant = VariantModel.getById(variantId);

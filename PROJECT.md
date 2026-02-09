@@ -1,12 +1,12 @@
-# Pique — AI-Powered Restaurant Marketing from a Single Video
+# Commis — AI-Powered Restaurant Marketing from a Single Video
 
 ## Inspiration
 
-I kept noticing the same thing — small restaurant owners who make incredible food but have terrible websites, or no website at all. They're busy running a kitchen, not learning Squarespace. Agencies charge thousands. Templates all look the same. I wondered what would happen if you could just film a quick walkthrough video of your restaurant and have AI handle the rest. That's basically what Pique tries to do.
+I kept noticing the same thing — small restaurant owners who make incredible food but have terrible websites, or no website at all. They're busy running a kitchen, not learning Squarespace. Agencies charge thousands. Templates all look the same. I wondered what would happen if you could just film a quick walkthrough video of your restaurant and have AI handle the rest. That's basically what Commis tries to do.
 
 ## What It Does
 
-You upload a video of your restaurant — just walk around, show the menu, the food, the space. Pique watches it and extracts everything: the restaurant name, full menu with prices, photos, cuisine type, vibe. From that, it generates a website, deploys it live, and then keeps improving it autonomously with A/B testing.
+You upload a video of your restaurant — just walk around, show the menu, the food, the space. Commis watches it and extracts everything: the restaurant name, full menu with prices, photos, cuisine type, vibe. From that, it generates a website, deploys it live, and then keeps improving it autonomously with A/B testing.
 
 It also cuts cooking clips into YouTube Shorts with AI voiceovers and subtitles, generates social media graphics, recommends Google Ads campaigns, and aggregates customer reviews into actionable digests. There's a voice assistant you can talk to that controls the whole thing. The idea is that a restaurant owner shouldn't have to touch any of this — it just runs.
 

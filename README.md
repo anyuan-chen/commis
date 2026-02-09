@@ -1,6 +1,6 @@
-# Pique
+# Commis
 
-Pique turns a single walkthrough video of a restaurant into a fully operational web presence — website, YouTube Shorts, review digests, and autonomous A/B testing — without the owner touching anything after upload. The system is built around the idea that most restaurant owners have zero time for marketing and zero interest in learning design tools, but they *can* film a 2-minute video on their phone.
+Commis turns a single walkthrough video of a restaurant into a fully operational web presence — website, YouTube Shorts, review digests, and autonomous A/B testing — without the owner touching anything after upload. The system is built around the idea that most restaurant owners have zero time for marketing and zero interest in learning design tools, but they *can* film a 2-minute video on their phone.
 
 The core technical bet is that native multimodal video understanding (Gemini's File API) combined with iterative generation loops produces dramatically better output than one-shot prompting or frame-based extraction. Every pipeline in the system follows the same pattern: generate, evaluate with deterministic checks, feed failures back in, repeat.
 

@@ -11,7 +11,7 @@ export function setupMcp(app) {
 
   // Create MCP server
   const server = new McpServer({
-    name: 'pique',
+    name: 'commis',
     version: '1.0.0'
   });
 
