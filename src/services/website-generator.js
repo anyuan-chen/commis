@@ -11,13 +11,16 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 export class WebsiteGenerator {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   }
 
   /**
    * Generate website for a restaurant using Gemini
+   * @param {string} restaurantId - Restaurant ID
+   * @param {Object} options - Options
+   * @param {Function} options.onProgress - Progress callback (progress, stage)
    */
-  async generate(restaurantId) {
+  async generate(restaurantId, { onProgress = null } = {}) {
     // Get full restaurant data
     const restaurant = RestaurantModel.getFullData(restaurantId);
     if (!restaurant) {
@@ -29,19 +32,27 @@ export class WebsiteGenerator {
     await fs.mkdir(outputDir, { recursive: true });
     await fs.mkdir(join(outputDir, 'images'), { recursive: true });
 
-    // Process and copy images
+    // 20% - Processing images
+    onProgress?.(20, 'processing_images');
     const processedPhotos = await this.processImages(restaurant.photos, outputDir);
 
-    // Generate HTML files with Gemini
+    // 40% - Generating HTML
+    onProgress?.(40, 'generating_html');
     const files = await this.generateHTML(restaurant, processedPhotos);
 
+    // 75% - Injecting systems (cart, maps, analytics)
+    onProgress?.(75, 'injecting_systems');
+
     // Write all HTML files (formatted)
+    // 85% - Writing files
+    onProgress?.(85, 'writing_files');
     for (const [filename, html] of Object.entries(files)) {
       const formatted = await this.formatHTML(html);
       await fs.writeFile(join(outputDir, filename), formatted);
     }
 
-    // Track generated material
+    // 95% - Tracking material
+    onProgress?.(95, 'saving');
     const material = MaterialModel.create(restaurantId, {
       type: 'website',
       filePath: outputDir
@@ -57,7 +68,9 @@ export class WebsiteGenerator {
    * Generate complete HTML using Gemini
    */
   async generateHTML(restaurant, photos) {
-    const photoDescriptions = photos.map(p => ({
+    // Only pass photos if we have genuine food photography (not video frame captures)
+    const foodPhotos = photos.filter(p => p.type === 'food');
+    const photoDescriptions = foodPhotos.map(p => ({
       path: p.webPath,
       type: p.type,
       caption: p.caption,
@@ -76,6 +89,8 @@ export class WebsiteGenerator {
     // Get active notes (auto-filters expired ones)
     const activeNotes = NoteModel.getActive(restaurant.id);
 
+    const totalItems = menuData.reduce((sum, cat) => sum + cat.items.length, 0);
+
     const prompt = `You are an elite web designer known for creating stunning, award-winning restaurant websites. You have complete creative freedom.
 
 RESTAURANT:
@@ -90,24 +105,40 @@ RESTAURANT:
 - Email: ${restaurant.email || ''}
 - Hours: ${JSON.stringify(restaurant.hours || {})}
 
-MENU:
+MENU (${totalItems} items total — you MUST include ALL ${totalItems} items, do not omit, summarize, or abbreviate any):
 ${JSON.stringify(menuData, null, 2)}
 
-PHOTOS (use these exact paths):
-${JSON.stringify(photoDescriptions, null, 2)}
+${photoDescriptions.length > 0 ? `PHOTOS (use ONLY these exact relative paths):
+${JSON.stringify(photoDescriptions, null, 2)}` : 'NO PHOTOS AVAILABLE — do not use any images. Design with typography, color, and layout only.'}
 
 ${activeNotes.length > 0 ? `ANNOUNCEMENTS: ${activeNotes.map(n => n.content).join(' | ')}` : ''}
 
 CREATE TWO FILES:
 
+NAVIGATION (must be IDENTICAL on both pages):
+- Logo/restaurant name on left, links on right
+- Links: HOME, MENU
+- Use the EXACT same HTML structure and CSS for nav on both pages
+
 ===FILE:index.html===
 A stunning landing page that captures the restaurant's soul.
+${photoDescriptions.length > 0 ? '- Hero with one of the PHOTOS as background' : '- Hero with solid color or gradient background (no images)'}
 - Must include: <div id="google-map"></div> somewhere in contact area
 - Link to menu.html with compelling CTA
 
 ===FILE:menu.html===
-Beautiful menu with ordering. Each item needs:
-<button class="add-to-cart-btn" data-item-id="[unique]" data-name="[name]" data-price="[price]">Add to Cart</button>
+Beautiful menu with ordering (put EQUAL design effort here as index.html). EVERY item from the menu data above must appear.
+- Each category section must have: data-category="[category name]"
+- Each menu item must have: class="menu-item"
+- Each item needs: <button class="add-to-cart-btn" data-item-id="[unique]" data-name="[name]" data-price="[price]">Add to Cart</button>
+
+STRICT RULES — DO NOT VIOLATE:
+- ONLY output data that exists in the MENU and RESTAURANT sections above
+- Do NOT invent quantities, serving sizes, spice levels, or dietary labels
+- Do NOT invent descriptions for items that have empty/null descriptions
+- Do NOT add food images to menu items — we have NO dish photography
+- NEVER use unsplash.com, pexels.com, placeholder.com, or any external image URLs
+${photoDescriptions.length > 0 ? '- You may use the PHOTOS listed above for hero/banner backgrounds only' : '- Use NO images at all'}
 
 DESIGN FREEDOM:
 - Choose any Google Fonts that fit the vibe
@@ -605,15 +636,15 @@ OUTPUT (no markdown, no code fences):
         const outputPath = join(outputDir, 'images', filename);
 
         await sharp(photo.path)
-          .resize(1200, 800, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 85 })
+          .resize(1600, 1067, { fit: 'cover', position: 'center' })
+          .jpeg({ quality: 92, mozjpeg: true })
           .toFile(outputPath);
 
         // Also create thumbnail
         const thumbPath = join(outputDir, 'images', `${photo.id}_thumb.jpg`);
         await sharp(photo.path)
           .resize(400, 300, { fit: 'cover', position: 'center' })
-          .jpeg({ quality: 80 })
+          .jpeg({ quality: 85, mozjpeg: true })
           .toFile(thumbPath);
 
         processed.push({

@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
-import { RestaurantModel, NoteModel } from '../db/models/index.js';
+import { RestaurantModel, NoteModel, ReviewModel, ReviewDigestModel } from '../db/models/index.js';
 
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
@@ -159,9 +159,14 @@ Aspect ratio: ${aspectRatio}`;
     let enhancedPrompt = prompt;
 
     if (restaurant) {
+      const reviewContext = options.restaurantId ? this.getReviewContext(options.restaurantId) : null;
+      const ratingNote = reviewContext?.hasReviews && reviewContext.avgRating
+        ? `, rated ${reviewContext.avgRating}/5`
+        : '';
+
       enhancedPrompt = `${prompt}
 
-Style context: ${restaurant.cuisine_type || 'restaurant'} cuisine, brand color ${restaurant.primary_color || '#2563eb'}`;
+Style context: ${restaurant.cuisine_type || 'restaurant'} cuisine, brand color ${restaurant.primary_color || '#2563eb'}${ratingNote}`;
     }
 
     const outputPath = options.outputPath || join(
@@ -189,6 +194,8 @@ Style context: ${restaurant.cuisine_type || 'restaurant'} cuisine, brand color $
     if (!restaurant) throw new Error('Restaurant not found');
 
     const activeNotes = NoteModel.getActive(restaurantId);
+    const reviewContext = this.getReviewContext(restaurantId);
+    const reviewBlock = this.formatReviewPromptBlock(reviewContext);
 
     const aspectRatios = {
       instagram: '1:1',
@@ -201,7 +208,8 @@ Style context: ${restaurant.cuisine_type || 'restaurant'} cuisine, brand color $
       platform,
       theme,
       customText,
-      notes: activeNotes
+      notes: activeNotes,
+      reviewBlock
     });
 
     const outputPath = join(
@@ -228,6 +236,9 @@ Style context: ${restaurant.cuisine_type || 'restaurant'} cuisine, brand color $
     const restaurant = RestaurantModel.getFullData(restaurantId);
     if (!restaurant) throw new Error('Restaurant not found');
 
+    const reviewContext = this.getReviewContext(restaurantId);
+    const reviewBlock = this.formatReviewPromptBlock(reviewContext);
+
     const menuItems = category
       ? restaurant.menu.filter(c => c.name.toLowerCase().includes(category.toLowerCase()))
       : restaurant.menu;
@@ -238,7 +249,7 @@ RESTAURANT:
 - Name: ${restaurant.name}
 - Cuisine: ${restaurant.cuisine_type || 'Restaurant'}
 - Brand Color: ${restaurant.primary_color || '#2563eb'}
-
+${reviewBlock}
 MENU ITEMS:
 ${menuItems.map(cat => `
 ${cat.name}:
@@ -279,13 +290,16 @@ DESIGN REQUIREMENTS:
     const restaurant = RestaurantModel.getFullData(restaurantId);
     if (!restaurant) throw new Error('Restaurant not found');
 
+    const reviewContext = this.getReviewContext(restaurantId);
+    const reviewBlock = this.formatReviewPromptBlock(reviewContext);
+
     const prompt = `Create an eye-catching promotional graphic for "${restaurant.name}".
 
 RESTAURANT:
 - Name: ${restaurant.name}
 - Cuisine: ${restaurant.cuisine_type || 'Restaurant'}
 - Brand Color: ${restaurant.primary_color || '#2563eb'}
-
+${reviewBlock}
 PROMOTION DETAILS:
 ${promoText ? `- Offer: ${promoText}` : ''}
 ${eventName ? `- Event: ${eventName}` : ''}
@@ -333,13 +347,16 @@ DESIGN REQUIREMENTS:
       july4th: 'patriotic theme with red, white, blue, stars'
     };
 
+    const reviewContext = this.getReviewContext(restaurantId);
+    const reviewBlock = this.formatReviewPromptBlock(reviewContext);
+
     const prompt = `Create a ${holiday} holiday graphic for "${restaurant.name}".
 
 RESTAURANT:
 - Name: ${restaurant.name}
 - Cuisine: ${restaurant.cuisine_type || 'Restaurant'}
 - Brand Color: ${restaurant.primary_color || '#2563eb'}
-
+${reviewBlock}
 HOLIDAY STYLE:
 ${holidayThemes[holiday] || `${holiday} themed design`}
 
@@ -365,47 +382,149 @@ DESIGN REQUIREMENTS:
   }
 
   /**
-   * Edit/modify an existing image
+   * Generate a testimonial/review graphic featuring a customer quote
    */
-  async editImage(imagePath, editPrompt, options = {}) {
-    const { outputPath = null } = options;
+  async generateTestimonialGraphic(restaurantId, options = {}) {
+    const {
+      platform = 'instagram',
+      style = 'elegant',   // elegant | bold | minimal | warm
+      quoteIndex = 0
+    } = options;
 
-    const imageData = await fs.readFile(imagePath);
-    const base64Image = imageData.toString('base64');
-    const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    const restaurant = RestaurantModel.getFullData(restaurantId);
+    if (!restaurant) throw new Error('Restaurant not found');
 
-    const result = await this.model.generateContent([
-      { inlineData: { mimeType, data: base64Image } },
-      { text: editPrompt }
-    ]);
-
-    const response = result.response;
-
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        const newImageData = Buffer.from(part.inlineData.data, 'base64');
-
-        if (outputPath) {
-          await fs.writeFile(outputPath, newImageData);
-          return { path: outputPath, mimeType: part.inlineData.mimeType };
-        }
-
-        return {
-          data: newImageData,
-          base64: part.inlineData.data,
-          mimeType: part.inlineData.mimeType
-        };
-      }
+    const reviewContext = this.getReviewContext(restaurantId);
+    if (!reviewContext.hasReviews || !reviewContext.bestQuotes || reviewContext.bestQuotes.length === 0) {
+      throw new Error('No reviews available for this restaurant. Add reviews before generating a testimonial graphic.');
     }
 
-    throw new Error('No image generated in response');
+    const idx = Math.min(quoteIndex, reviewContext.bestQuotes.length - 1);
+    const quote = reviewContext.bestQuotes[idx];
+
+    const styleDescriptions = {
+      elegant: 'clean, elegant design with serif fonts, subtle background, and refined spacing',
+      bold: 'bold, high-contrast design with large impactful typography and vibrant brand colors',
+      minimal: 'minimal, modern design with plenty of whitespace and simple typography',
+      warm: 'warm, inviting design with soft tones, rounded elements, and cozy feel'
+    };
+
+    const stars = '\u2605'.repeat(quote.rating) + '\u2606'.repeat(5 - quote.rating);
+
+    const prompt = `Create a ${style} testimonial graphic for "${restaurant.name}".
+
+QUOTE:
+"${quote.text}"
+— ${quote.author}
+${stars}
+
+RESTAURANT:
+- Name: ${restaurant.name}
+- Cuisine: ${restaurant.cuisine_type || 'Restaurant'}
+- Brand Color: ${restaurant.primary_color || '#2563eb'}
+- Google Rating: ${reviewContext.avgRating}/5 (${reviewContext.reviewCount} reviews)
+
+DESIGN REQUIREMENTS:
+- ${styleDescriptions[style] || styleDescriptions.elegant}
+- Customer quote as the focal point, large and prominent
+- Star rating displayed visually (${quote.rating}/5 stars)
+- Author name below the quote
+- Restaurant name and overall Google rating badge in corner
+- Professional, trustworthy, and shareable
+- Suitable for ${platform}`;
+
+    const aspectRatios = {
+      instagram: '1:1',
+      facebook: '16:9',
+      twitter: '16:9',
+      story: '9:16'
+    };
+
+    const outputPath = join(
+      config.paths.images,
+      `${restaurantId}_testimonial_${style}_${Date.now()}.png`
+    );
+
+    return this.generate(prompt, {
+      aspectRatio: aspectRatios[platform] || '1:1',
+      outputPath
+    });
+  }
+
+  /**
+   * Get structured review context for a restaurant
+   */
+  getReviewContext(restaurantId) {
+    try {
+      const digest = ReviewDigestModel.getLatest(restaurantId);
+
+      let avgRating, reviewCount, topPraiseThemes;
+
+      if (digest && digest.reviewCount > 0) {
+        avgRating = digest.avgRating;
+        reviewCount = digest.reviewCount;
+        topPraiseThemes = (digest.praiseThemes || []).slice(0, 3).map(p => p.theme);
+      } else {
+        const stats = ReviewModel.getStats(restaurantId);
+        if (!stats || stats.total_reviews === 0) return { hasReviews: false };
+        avgRating = stats.avg_rating;
+        reviewCount = stats.total_reviews;
+        topPraiseThemes = [];
+      }
+
+      // Pick best short quotes from positive reviews
+      const positiveReviews = ReviewModel.getByRestaurant(restaurantId, {
+        sentiment: 'positive',
+        limit: 30
+      });
+
+      const bestQuotes = positiveReviews
+        .filter(r => r.rating >= 4 && r.text && r.text.length >= 20 && r.text.length <= 200)
+        .sort((a, b) => (b.sentimentScore || 0) - (a.sentimentScore || 0))
+        .slice(0, 3)
+        .map(r => ({ text: r.text, author: r.authorName || 'Customer', rating: r.rating }));
+
+      return {
+        hasReviews: true,
+        avgRating: avgRating ? parseFloat(avgRating.toFixed(1)) : null,
+        reviewCount,
+        topPraiseThemes,
+        bestQuotes
+      };
+    } catch (e) {
+      return { hasReviews: false };
+    }
+  }
+
+  /**
+   * Format review context into a prompt block (empty string if no reviews)
+   */
+  formatReviewPromptBlock(ctx) {
+    if (!ctx || !ctx.hasReviews) return '';
+
+    let block = `\nCUSTOMER REVIEWS (use only when relevant — skip for closures, event-only announcements):`;
+
+    if (ctx.avgRating && ctx.reviewCount) {
+      block += `\n- Google Rating: ${ctx.avgRating}/5 (${ctx.reviewCount} reviews)`;
+    }
+
+    if (ctx.topPraiseThemes && ctx.topPraiseThemes.length > 0) {
+      block += `\n- Customers love: ${ctx.topPraiseThemes.join(', ')}`;
+    }
+
+    if (ctx.bestQuotes && ctx.bestQuotes.length > 0) {
+      block += `\n- Top quote: "${ctx.bestQuotes[0].text}" — ${ctx.bestQuotes[0].author}`;
+    }
+
+    block += '\n';
+    return block;
   }
 
   /**
    * Build prompt for social media posts
    */
   buildSocialPrompt(restaurant, options) {
-    const { platform, theme, customText, notes } = options;
+    const { platform, theme, customText, notes, reviewBlock = '' } = options;
 
     const themePrompts = {
       promotion: 'promotional post highlighting a special offer or the restaurant experience',
@@ -423,7 +542,7 @@ RESTAURANT:
 - Brand Color: ${restaurant.primary_color || '#2563eb'}
 
 POST TYPE: ${themePrompts[theme] || theme}
-
+${reviewBlock}
 ${customText ? `TEXT TO INCLUDE: "${customText}"` : ''}
 
 DESIGN REQUIREMENTS:
