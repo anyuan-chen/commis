@@ -6,6 +6,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { ExtractionLogger } from '../services/extraction-logger.js';
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,53 @@ router.get('/sessions/:sessionId/website', (req, res) => {
   }
 
   res.sendFile(websitePath);
+});
+
+// ============================================
+// Extraction Pipeline Debug Routes
+// ============================================
+
+// List all extraction runs
+router.get('/extraction/runs', async (req, res) => {
+  try {
+    const runs = await ExtractionLogger.listRuns();
+    res.json({ runs });
+  } catch (error) {
+    console.error('List runs error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get a specific run by ID
+router.get('/extraction/runs/:runId', async (req, res) => {
+  try {
+    const run = await ExtractionLogger.load(req.params.runId);
+    res.json({ run });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ error: 'Run not found' });
+    }
+    console.error('Get run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get a specific step from a run
+router.get('/extraction/runs/:runId/steps/:stepIndex', async (req, res) => {
+  try {
+    const run = await ExtractionLogger.load(req.params.runId);
+    const stepIndex = parseInt(req.params.stepIndex);
+    const step = run.steps[stepIndex];
+
+    if (!step) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+
+    res.json({ step });
+  } catch (error) {
+    console.error('Get step error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 export default router;

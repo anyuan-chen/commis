@@ -1,4 +1,6 @@
-import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, NoteModel, ReviewModel, ReviewDigestModel } from '../db/models/index.js';
+import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, NoteModel, ReviewModel, ReviewDigestModel, MaterialModel } from '../db/models/index.js';
+import { reviewAggregator } from '../services/review-aggregator.js';
+import { WebsiteUpdater } from '../services/website-updater.js';
 
 /**
  * Tool executor - handles all voice command tool calls
@@ -29,6 +31,32 @@ export class ToolExecutor {
   }
 
   /**
+   * Chunk-edit website HTML to reflect a data change, then deploy.
+   * DB is already updated — this only touches HTML.
+   */
+  async _updateWebsiteAndDeploy(prompt) {
+    try {
+      console.log('[WebsiteUpdate] Starting update for restaurant', this.restaurantId);
+      console.log('[WebsiteUpdate] Prompt:', prompt);
+      const updater = new WebsiteUpdater();
+      await updater.updateAll(this.restaurantId, prompt, { skipSQL: true });
+      console.log('[WebsiteUpdate] updateAll completed');
+      if (this.cloudflareDeployer) {
+        console.log('[WebsiteUpdate] Deploying to Cloudflare...');
+        const result = await this.cloudflareDeployer.deploy(this.restaurantId);
+        console.log('[WebsiteUpdate] Deployed:', result.url);
+        return result.url;
+      } else {
+        console.log('[WebsiteUpdate] No cloudflareDeployer configured — skipping deploy');
+      }
+    } catch (err) {
+      console.error('[WebsiteUpdate] FAILED:', err.message);
+      console.error('[WebsiteUpdate] Stack:', err.stack);
+    }
+    return null;
+  }
+
+  /**
    * Execute a tool by name
    */
   async execute(toolName, args) {
@@ -49,6 +77,7 @@ export class ToolExecutor {
       generatePromoGraphic: () => this.generatePromoGraphic(args),
       generateHolidayGraphic: () => this.generateHolidayGraphic(args),
       generateMenuGraphic: () => this.generateMenuGraphic(args),
+      generateTestimonialGraphic: () => this.generateTestimonialGraphic(args),
       getReviewDigest: () => this.getReviewDigest(),
       getReviewStats: () => this.getReviewStats(args)
     };
@@ -125,10 +154,15 @@ export class ToolExecutor {
       price
     });
 
+    const websiteUrl = await this._updateWebsiteAndDeploy(
+      `New menu item "${name}" ($${price}) was added to ${category}. Update the menu sections to include it.`
+    );
+
     return {
       success: true,
       message: `Added "${name}" to ${category} for $${price}`,
-      item
+      item,
+      websiteUrl
     };
   }
 
@@ -154,10 +188,15 @@ export class ToolExecutor {
 
     const updated = MenuItemModel.update(item.id, updateData);
 
+    const websiteUrl = await this._updateWebsiteAndDeploy(
+      `Menu item "${itemName}" ${field} changed to "${value}". Update the website to reflect this.`
+    );
+
     return {
       success: true,
       message: `Updated ${itemName}'s ${field} to "${value}"`,
-      item: updated
+      item: updated,
+      websiteUrl
     };
   }
 
@@ -176,9 +215,14 @@ export class ToolExecutor {
 
     MenuItemModel.delete(item.id);
 
+    const websiteUrl = await this._updateWebsiteAndDeploy(
+      `Menu item "${item.name}" was removed. Update the menu sections to remove it.`
+    );
+
     return {
       success: true,
-      message: `Removed "${item.name}" from the menu`
+      message: `Removed "${item.name}" from the menu`,
+      websiteUrl
     };
   }
 
@@ -215,10 +259,19 @@ export class ToolExecutor {
 
     try {
       const result = await this.websiteGenerator.generate(this.restaurantId);
+      let websiteUrl = null;
+      if (this.cloudflareDeployer) {
+        try {
+          const deployResult = await this.cloudflareDeployer.deploy(this.restaurantId);
+          websiteUrl = deployResult.url;
+        } catch (err) {
+          console.error('Deploy after regenerate failed:', err.message);
+        }
+      }
       return {
         success: true,
         message: 'Website regenerated successfully',
-        path: result.path
+        websiteUrl
       };
     } catch (error) {
       return {
@@ -271,7 +324,7 @@ export class ToolExecutor {
       return {
         success: true,
         message: `Website deployed successfully`,
-        url: result.url
+        websiteUrl: result.url
       };
     } catch (error) {
       return {
@@ -352,6 +405,8 @@ export class ToolExecutor {
         customText
       });
 
+      MaterialModel.create(this.restaurantId, { type: 'graphic', filePath: result.path });
+
       return {
         success: true,
         message: `Generated ${platform} ${theme} graphic`,
@@ -378,6 +433,8 @@ export class ToolExecutor {
         date
       });
 
+      MaterialModel.create(this.restaurantId, { type: 'graphic', filePath: result.path });
+
       return {
         success: true,
         message: `Generated promo graphic${eventName ? ` for ${eventName}` : ''}`,
@@ -402,6 +459,8 @@ export class ToolExecutor {
         holiday,
         message
       });
+
+      MaterialModel.create(this.restaurantId, { type: 'graphic', filePath: result.path });
 
       return {
         success: true,
@@ -428,6 +487,8 @@ export class ToolExecutor {
         category
       });
 
+      MaterialModel.create(this.restaurantId, { type: 'graphic', filePath: result.path });
+
       return {
         success: true,
         message: `Generated ${style} menu graphic`,
@@ -440,15 +501,63 @@ export class ToolExecutor {
   }
 
   /**
+   * Generate testimonial graphic featuring a customer review
+   */
+  async generateTestimonialGraphic({ platform = 'instagram', style = 'elegant', quoteIndex = 0 }) {
+    if (!this.imageGenerator) {
+      return { success: false, error: 'Image generator not available' };
+    }
+
+    try {
+      const result = await this.imageGenerator.generateTestimonialGraphic(this.restaurantId, {
+        platform,
+        style,
+        quoteIndex
+      });
+
+      MaterialModel.create(this.restaurantId, { type: 'graphic', filePath: result.path });
+
+      return {
+        success: true,
+        message: `Generated ${style} testimonial graphic`,
+        path: result.path,
+        url: `/images/${result.path.split('/').pop()}`
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Get the latest review digest
    */
   async getReviewDigest() {
-    const digest = ReviewDigestModel.getLatest(this.restaurantId);
+    // Always fetch freshest 5 from Google first (upsert handles dedup)
+    const restaurant = RestaurantModel.getById(this.restaurantId);
+    if (restaurant?.google_place_id) {
+      try {
+        await reviewAggregator.fetchGoogleReviews(this.restaurantId, restaurant.google_place_id);
+      } catch (e) {
+        console.error('Fetch reviews failed:', e.message);
+      }
+    }
+
+    let digest = ReviewDigestModel.getLatest(this.restaurantId);
+
+    // Generate digest if none exists
+    if (!digest) {
+      try {
+        const { digestGenerator } = await import('../services/digest-generator.js');
+        digest = await digestGenerator.generateDigest(this.restaurantId);
+      } catch (e) {
+        console.error('Generate digest failed:', e.message);
+      }
+    }
 
     if (!digest) {
       return {
         success: false,
-        message: 'No review digest available yet. Reviews need to be collected and analyzed first.'
+        message: 'No reviews found. Make sure the restaurant is linked to a Google Place ID.'
       };
     }
 
@@ -477,6 +586,16 @@ export class ToolExecutor {
    * Get quick review statistics
    */
   async getReviewStats({ days = 30 } = {}) {
+    // Always fetch freshest 5 from Google first (upsert handles dedup)
+    const restaurant = RestaurantModel.getById(this.restaurantId);
+    if (restaurant?.google_place_id) {
+      try {
+        await reviewAggregator.fetchGoogleReviews(this.restaurantId, restaurant.google_place_id);
+      } catch (e) {
+        console.error('Fetch reviews failed:', e.message);
+      }
+    }
+
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
@@ -487,9 +606,15 @@ export class ToolExecutor {
     if (!stats || stats.total_reviews === 0) {
       return {
         success: false,
-        message: 'No reviews found for this period.'
+        message: 'No reviews found. Make sure the restaurant is linked to a Google Place ID.'
       };
     }
+
+    // Include actual review texts so the model can answer content-specific questions
+    const reviews = ReviewModel.getByRestaurant(this.restaurantId, {
+      startDate: startDate.toISOString(),
+      limit: 30
+    });
 
     return {
       success: true,
@@ -502,7 +627,13 @@ export class ToolExecutor {
         neutral: stats.neutral_count || 0,
         mixed: stats.mixed_count || 0
       },
-      avgSentimentScore: stats.avg_sentiment ? parseFloat(stats.avg_sentiment.toFixed(2)) : null
+      avgSentimentScore: stats.avg_sentiment ? parseFloat(stats.avg_sentiment.toFixed(2)) : null,
+      reviews: reviews.map(r => ({
+        author: r.authorName,
+        rating: r.rating,
+        text: r.text,
+        date: r.reviewDate
+      }))
     };
   }
 }

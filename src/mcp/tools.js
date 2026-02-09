@@ -4,7 +4,7 @@ import { pipeline } from 'stream/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 import { ShortsJobModel } from '../db/models/shorts-job.js';
-import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewDigestModel } from '../db/models/index.js';
+import { RestaurantModel, MenuCategoryModel, MenuItemModel, PhotoModel, JobModel, ReviewDigestModel, MaterialModel } from '../db/models/index.js';
 import { processShort } from '../routes/shorts.js';
 import { getStoredTokens, storeTokens } from '../routes/youtube-auth.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
@@ -15,6 +15,7 @@ import { UIEvaluator } from '../services/ui-evaluator.js';
 import { CloudflareDeployer } from '../services/cloudflare-deploy.js';
 import { VideoProcessor } from '../services/video-processor.js';
 import { GeminiVision } from '../services/gemini-vision.js';
+import { VideoExtractor } from '../services/video-extractor.js';
 import { adRecommender } from '../services/ad-recommender.js';
 import { WebsiteUpdater } from '../services/website-updater.js';
 import { digestGenerator } from '../services/digest-generator.js';
@@ -93,7 +94,7 @@ async function waitForUploadJob(jobId, timeout = 300000) {
 export const tools = [
   {
     name: 'create_youtube_short',
-    description: 'Process a cooking video into YouTube Shorts (narrated + ASMR versions) and upload to YouTube. This is a blocking operation that takes 3-5 minutes. Returns both video URLs and YouTube video ID.',
+    description: 'Process a cooking video into YouTube Shorts and upload to YouTube. AI analyzes the clip and picks 2 tailored styles (e.g. hype narration, cinematic ASMR). Takes 3-5 minutes. Returns variant labels, styles, and YouTube URLs. After completion, briefly tell the user what styles were chosen and why they suit the clip.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -160,39 +161,62 @@ export const tools = [
         token_type: storedTokens.token_type
       };
 
-      const { videoId, videoUrl: ytUrl, freshTokens } = await youtubeUploader.uploadVideo(
-        completed.outputPath,
-        {
-          title: completed.title || 'Cooking Short',
-          description: completed.description || '',
-          tags: completed.tags || [],
-          privacyStatus
-        },
-        tokens
-      );
+      // Upload each variant to YouTube
+      let latestTokens = tokens;
+      const uploadedVariants = [];
 
-      // Update job with YouTube info
-      ShortsJobModel.setYouTubeInfo(job.id, videoId, ytUrl);
-
-      // Store refreshed tokens if updated
-      if (freshTokens) {
-        storeTokens(freshTokens);
-      }
-
-      // Set thumbnail if available
-      if (completed.thumbnailPath) {
+      for (const variant of completed.variants) {
+        if (!variant.outputPath) continue;
         try {
-          await youtubeUploader.setThumbnail(videoId, completed.thumbnailPath, freshTokens || tokens);
+          const label = variant.label || variant.type;
+          const suffix = variant.hasVoiceover !== false && completed.variants.indexOf(variant) === 0 ? '' : ` (${label})`;
+          const extraTags = [variant.type.replace(/-/g, ' ')];
+
+          const result = await youtubeUploader.uploadVideo(
+            variant.outputPath,
+            {
+              title: `${completed.title || 'Cooking Short'}${suffix}`,
+              description: completed.description || '',
+              tags: [...(completed.tags || []), ...extraTags],
+              privacyStatus
+            },
+            latestTokens
+          );
+
+          if (result.freshTokens) {
+            storeTokens(result.freshTokens);
+            latestTokens = result.freshTokens;
+          }
+
+          ShortsJobModel.setVariantYouTube(job.id, variant.type, result.videoId, result.videoUrl);
+
+          // Set thumbnail
+          if (completed.thumbnailPath) {
+            try {
+              await youtubeUploader.setThumbnail(result.videoId, completed.thumbnailPath, latestTokens);
+            } catch (err) {
+              console.warn(`MCP: Failed to set ${variant.type} thumbnail:`, err.message);
+            }
+          }
+
+          uploadedVariants.push({
+            type: variant.type,
+            label: variant.label || variant.type,
+            voice: variant.voice || null,
+            youtubeUrl: result.videoUrl,
+            youtubeVideoId: result.videoId,
+            previewUrl: `/api/shorts/preview/${job.id}/${variant.type}`
+          });
         } catch (err) {
-          console.warn('MCP: Failed to set thumbnail:', err.message);
+          console.warn(`MCP: Failed to upload ${variant.type} version:`, err.message);
         }
       }
 
       return {
-        youtubeUrl: ytUrl,
-        youtubeVideoId: videoId,
-        narratedVideoUrl: `/api/shorts/preview/${job.id}`,
-        asmrVideoUrl: `/api/shorts/preview-asmr/${job.id}`,
+        variants: uploadedVariants,
+        // Backwards compat — first variant is primary
+        youtubeUrl: uploadedVariants[0]?.youtubeUrl,
+        youtubeVideoId: uploadedVariants[0]?.youtubeVideoId,
         title: completed.title,
         description: completed.description,
         tags: completed.tags
@@ -221,8 +245,8 @@ export const tools = [
         },
         type: {
           type: 'string',
-          enum: ['custom', 'social', 'menu', 'promo', 'creative'],
-          description: 'Type of graphic: custom/social/menu/promo use Gemini, "creative" uses Imagen 3 for photorealistic images'
+          enum: ['custom', 'social', 'menu', 'promo', 'creative', 'testimonial'],
+          description: 'Type of graphic: custom/social/menu/promo/testimonial use Gemini, "creative" uses Imagen 3 for photorealistic images'
         },
         model: {
           type: 'string',
@@ -268,6 +292,10 @@ export const tools = [
         result = await generator.generatePromoGraphic(restaurantId, {
           promoText: prompt
         });
+      } else if (type === 'testimonial') {
+        result = await generator.generateTestimonialGraphic(restaurantId, {
+          platform
+        });
       } else {
         // Custom generation with restaurant context
         const enhancedPrompt = `For restaurant "${restaurant.name}" (${restaurant.cuisine_type || 'restaurant'}), brand color ${restaurant.primary_color || '#2563eb'}:\n\n${prompt}`;
@@ -277,6 +305,8 @@ export const tools = [
           model: model || 'gemini'
         });
       }
+
+      MaterialModel.create(restaurantId, { type: 'graphic', filePath: result.path });
 
       return {
         imageUrl: `/images/${result.path.split('/').pop()}`,
@@ -393,24 +423,21 @@ export const tools = [
 
       const results = await evaluateExistingWebsite(restaurantId);
 
+      const formatPageResult = (result) => result.error
+        ? { error: result.error }
+        : {
+            combinedScore: result.combinedScore,
+            passesQualityBar: result.passesQualityBar,
+            visualScores: result.visualEvaluation?.scores,
+            criticalIssues: result.visualEvaluation?.criticalIssues,
+            staticIssues: result.staticAnalysis?.issues,
+            improvements: result.improvements
+          };
+
       return {
         restaurantName: restaurant.name,
-        indexPage: results.index.error ? { error: results.index.error } : {
-          combinedScore: results.index.combinedScore,
-          passesQualityBar: results.index.passesQualityBar,
-          visualScores: results.index.visualEvaluation?.scores,
-          criticalIssues: results.index.visualEvaluation?.criticalIssues,
-          staticIssues: results.index.staticAnalysis?.issues,
-          improvements: results.index.improvements
-        },
-        menuPage: results.menu.error ? { error: results.menu.error } : {
-          combinedScore: results.menu.combinedScore,
-          passesQualityBar: results.menu.passesQualityBar,
-          visualScores: results.menu.visualEvaluation?.scores,
-          criticalIssues: results.menu.visualEvaluation?.criticalIssues,
-          staticIssues: results.menu.staticAnalysis?.issues,
-          improvements: results.menu.improvements
-        },
+        indexPage: formatPageResult(results.index),
+        menuPage: formatPageResult(results.menu),
         overallAssessment: {
           averageScore: Math.round(
             ((results.index.combinedScore || 0) + (results.menu.combinedScore || 0)) / 2
@@ -540,11 +567,9 @@ export const tools = [
       // 1. Get video path (local upload or download from URL)
       let videoPath;
       if (videoUrl.startsWith('/uploads/')) {
-        // Local upload - use directly
         const filename = videoUrl.replace('/uploads/', '');
         videoPath = join(config.paths.uploads, filename);
       } else {
-        // Remote URL - download
         videoPath = join(config.paths.uploads, `${uuidv4()}.mp4`);
         await downloadFromUrl(videoUrl, videoPath);
       }
@@ -552,31 +577,27 @@ export const tools = [
       // 2. Create a processing job
       const job = JobModel.create({ videoPath });
 
-      // 3. Process video in background
-      const gemini = new GeminiVision();
+      // 3. Use full VideoExtractor (native video understanding + two-pass Pro model)
+      const extractor = new VideoExtractor();
 
       try {
         JobModel.updateStatus(job.id, 'processing', 10);
 
-        // Extract frames from video
-        const frames = await VideoProcessor.extractFrames(videoPath, {
-          interval: 2,
-          maxFrames: 25
-        });
-        JobModel.updateProgress(job.id, 30);
+        const outputDir = join(config.paths.images, job.id);
+        const result = await extractor.extractWithFallback(videoPath, { outputDir });
 
-        // Analyze frames with Gemini Vision
-        const extractedData = await gemini.extractRestaurantData(frames);
         JobModel.updateProgress(job.id, 60);
+
+        const { frames, menuItems: menuResult, restaurantInfo, style } = result;
 
         // Create restaurant record
         const restaurant = RestaurantModel.create({
-          name: extractedData.restaurantName,
-          tagline: extractedData.tagline,
-          description: extractedData.description,
-          cuisineType: extractedData.cuisineType,
-          styleTheme: extractedData.styleTheme || 'modern',
-          primaryColor: extractedData.primaryColor || '#2563eb'
+          name: restaurantInfo.name,
+          tagline: restaurantInfo.tagline,
+          description: restaurantInfo.description,
+          cuisineType: restaurantInfo.cuisineType,
+          styleTheme: style.theme || 'modern',
+          primaryColor: style.primaryColor || '#2563eb'
         });
 
         JobModel.setRestaurantId(job.id, restaurant.id);
@@ -584,10 +605,10 @@ export const tools = [
 
         // Create menu categories and items
         const menuItems = [];
-        if (extractedData.menuItems && extractedData.menuItems.length > 0) {
+        if (menuResult.items && menuResult.items.length > 0) {
           const categoriesMap = new Map();
 
-          for (const item of extractedData.menuItems) {
+          for (const item of menuResult.items) {
             const categoryName = item.category || 'Main Dishes';
 
             if (!categoriesMap.has(categoryName)) {
@@ -595,15 +616,16 @@ export const tools = [
               categoriesMap.set(categoryName, category.id);
             }
 
-            const menuItem = MenuItemModel.create(categoriesMap.get(categoryName), {
+            MenuItemModel.create(categoriesMap.get(categoryName), {
               name: item.name,
               description: item.description,
-              price: item.estimatedPrice
+              price: item.price,
+              dietaryTags: item.dietaryTags || []
             });
             menuItems.push({
               name: item.name,
               description: item.description,
-              price: item.estimatedPrice,
+              price: item.price,
               category: categoryName
             });
           }
@@ -611,28 +633,22 @@ export const tools = [
 
         JobModel.updateProgress(job.id, 80);
 
-        // Save photo references
+        // Save photo references from extracted frames
         const photos = [];
-        if (extractedData.photos && extractedData.photos.length > 0) {
-          for (const photo of extractedData.photos) {
-            if (photo.frameIndex < frames.length) {
-              const framePath = frames[photo.frameIndex];
-              const newPath = join(config.paths.images, `${restaurant.id}_${photo.type}_${Date.now()}.jpg`);
-              await fs.copyFile(framePath, newPath);
+        if (frames && frames.length > 0) {
+          for (const frame of frames) {
+            PhotoModel.create(restaurant.id, {
+              path: frame.path,
+              type: frame.type,
+              caption: frame.description,
+              isPrimary: frame.type === 'exterior' || frame.type === 'interior'
+            });
 
-              PhotoModel.create(restaurant.id, {
-                path: newPath,
-                type: photo.type,
-                caption: photo.description,
-                isPrimary: photo.type === 'exterior' || photo.type === 'interior'
-              });
-
-              photos.push({
-                type: photo.type,
-                caption: photo.description,
-                path: `/images/${newPath.split('/').pop()}`
-              });
-            }
+            photos.push({
+              type: frame.type,
+              caption: frame.description,
+              path: frame.path
+            });
           }
         }
 
@@ -640,10 +656,10 @@ export const tools = [
 
         return {
           restaurantId: restaurant.id,
-          name: extractedData.restaurantName,
-          cuisineType: extractedData.cuisineType,
-          tagline: extractedData.tagline,
-          description: extractedData.description,
+          name: restaurantInfo.name,
+          cuisineType: restaurantInfo.cuisineType,
+          tagline: restaurantInfo.tagline,
+          description: restaurantInfo.description,
           menuItems,
           photos
         };
@@ -710,13 +726,24 @@ export const tools = [
       const updater = new WebsiteUpdater();
       const result = await updater.updateAll(restaurantId, prompt);
 
+      // Auto-deploy to Cloudflare after modification
+      let deployedUrl = null;
+      try {
+        const deployer = new CloudflareDeployer();
+        const { url } = await deployer.deploy(restaurantId);
+        deployedUrl = url;
+      } catch (err) {
+        console.error('Auto-deploy after modify_website failed:', err.message);
+      }
+
       return {
         success: result.success,
         classification: result.classification,
         sqlExecuted: result.sqlExecuted,
         chunksModified: result.chunksModified,
         restaurantName: restaurant.name,
-        message: `Website updated: ${result.classification.summary}`
+        deployedUrl,
+        message: `Website updated: ${result.classification.summary}${deployedUrl ? ` (deployed to ${deployedUrl})` : ' (deploy failed)'}`
       };
     }
   },

@@ -9,16 +9,16 @@ import uploadRoutes from './routes/upload.js';
 import previewRoutes from './routes/preview.js';
 import deployRoutes from './routes/deploy.js';
 import downloadRoutes from './routes/download.js';
-import graphicsRoutes from './routes/graphics.js';
 import shortsRoutes from './routes/shorts.js';
 import youtubeAuthRoutes from './routes/youtube-auth.js';
 import googleAdsAuthRoutes from './routes/google-ads-auth.js';
 import ordersRoutes from './routes/orders.js';
 import debugRoutes from './routes/debug.js';
-import chatRoutes from './routes/chat.js';
 import reviewsRoutes from './routes/reviews.js';
 import analyticsRoutes from './routes/analytics.js';
 import evaluateRoutes from './routes/evaluate.js';
+import onboardRoutes from './routes/onboard.js';
+import galleryRoutes from './routes/gallery.js';
 import { setupVoiceWebSocket } from './routes/voice.js';
 import { setupMcp } from './mcp/index.js';
 import { startDigestScheduler } from './jobs/digest-scheduler.js';
@@ -73,21 +73,24 @@ app.use('/preview-static', express.static(config.paths.websites));
 // Serve uploaded images
 app.use('/images', express.static(config.paths.images));
 
+// Serve shorts output (clips, variants, thumbnails)
+app.use('/shorts-output', express.static(config.paths.shorts));
+
 // API Routes
 app.use('/api/upload', uploadRoutes);
 app.use('/api', previewRoutes);
 app.use('/api/deploy', deployRoutes);
 app.use('/api/download', downloadRoutes);
-app.use('/api/graphics', graphicsRoutes);
 app.use('/api/shorts', shortsRoutes);
 app.use('/api/youtube', youtubeAuthRoutes);
 app.use('/api/google-ads', googleAdsAuthRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/debug', debugRoutes);
-app.use('/api/chat', chatRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/evaluate', evaluateRoutes);
+app.use('/api/onboard', onboardRoutes);
+app.use('/api/gallery', galleryRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -114,7 +117,7 @@ startOptimizerScheduler();
 
 // Start server
 const PORT = config.port;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║                       Pique Server                         ║
@@ -166,8 +169,11 @@ server.listen(PORT, () => {
 ║    POST /api/evaluate/:id/regenerate - Regenerate w/ evals ║
 ║    GET  /api/evaluate/:id/debug   - View iteration debug   ║
 ║                                                            ║
-║  Debug:                                                    ║
+║  Pages:                                                    ║
+║    GET  /                         - Onboarding             ║
+║    GET  /voice.html               - Voice assistant        ║
 ║    GET  /debug.html               - Pipeline debug viewer  ║
+║    GET  /extraction-debug.html    - Extraction debug UI    ║
 ║                                                            ║
 ║  MCP (Model Context Protocol):                             ║
 ║    GET  /mcp                      - SSE connection         ║
