@@ -6,7 +6,7 @@ const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 export class GeminiVision {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   }
 
   /**
@@ -110,66 +110,6 @@ Return ONLY valid JSON, no markdown formatting.`;
   }
 
   /**
-   * Analyze a single frame for specific content
-   */
-  async analyzeFrame(framePath, analysisType = 'general') {
-    const prompts = {
-      general: 'Describe what you see in this image. Is this a food photo, interior shot, exterior shot, or menu?',
-      menu: 'Extract any menu text, dish names, and prices visible in this image. Return as JSON array of {name, description, price}.',
-      food: 'Describe this food dish. What ingredients do you see? What cuisine style is it? Suggest a name and description.',
-      text: 'Extract all text visible in this image. Return as a simple array of strings.'
-    };
-
-    return this.analyzeImage(framePath, prompts[analysisType] || prompts.general);
-  }
-
-  /**
-   * Get suggested website style based on cuisine and atmosphere
-   */
-  async suggestStyle(restaurantData) {
-    const prompt = `Based on this restaurant data, suggest the best website style:
-
-Restaurant: ${restaurantData.name || 'Unknown'}
-Cuisine: ${restaurantData.cuisineType || 'Unknown'}
-Description: ${restaurantData.description || 'No description'}
-Ambiance: ${restaurantData.ambiance || 'Unknown'}
-
-Return JSON:
-{
-  "styleTheme": "modern | rustic | vibrant",
-  "primaryColor": "#hexcode",
-  "secondaryColor": "#hexcode",
-  "fontStyle": "elegant | casual | bold",
-  "reasoning": "brief explanation of why this style fits"
-}
-
-Guidelines:
-- Italian/French restaurants: often suit 'rustic' with warm colors
-- Japanese/minimalist: 'modern' with clean colors
-- Mexican/Indian/vibrant cuisines: 'vibrant' with bold colors
-- Fine dining: 'modern' or 'elegant'
-- Casual/family: 'rustic' or 'vibrant'
-
-Return ONLY valid JSON.`;
-
-    const response = await this.model.generateContent(prompt);
-    const text = response.response.text();
-
-    try {
-      let cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      return JSON.parse(cleaned);
-    } catch {
-      return {
-        styleTheme: 'modern',
-        primaryColor: '#2563eb',
-        secondaryColor: '#1e40af',
-        fontStyle: 'casual',
-        reasoning: 'Default style applied'
-      };
-    }
-  }
-
-  /**
    * Select evenly distributed frames from an array
    */
   selectDistributedFrames(frames, maxCount) {
@@ -186,41 +126,4 @@ Return ONLY valid JSON.`;
     return selected;
   }
 
-  /**
-   * Identify missing required information
-   */
-  identifyMissingFields(data) {
-    const required = {
-      restaurantName: 'Restaurant name',
-      address: 'Address/location',
-      phone: 'Phone number',
-      menuItems: 'At least 3 menu items'
-    };
-
-    const recommended = {
-      hours: 'Hours of operation',
-      email: 'Email address',
-      description: 'Restaurant description'
-    };
-
-    const missing = [];
-
-    if (!data.restaurantName) {
-      missing.push({ field: 'restaurantName', label: required.restaurantName, required: true });
-    }
-    if (!data.address) {
-      missing.push({ field: 'address', label: required.address, required: true });
-    }
-    if (!data.phone) {
-      missing.push({ field: 'phone', label: required.phone, required: false });
-    }
-    if (!data.menuItems || data.menuItems.length < 3) {
-      missing.push({ field: 'menuItems', label: required.menuItems, required: true });
-    }
-    if (!data.hours) {
-      missing.push({ field: 'hours', label: recommended.hours, required: false });
-    }
-
-    return missing;
-  }
 }
