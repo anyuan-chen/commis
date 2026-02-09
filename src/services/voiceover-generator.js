@@ -10,7 +10,7 @@ const fileManager = new GoogleAIFileManager(config.geminiApiKey);
 
 export class VoiceoverGenerator {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   }
 
   /**
@@ -23,34 +23,61 @@ export class VoiceoverGenerator {
   async generateScript(clipPath, clipAnalysis = {}, options = {}) {
     const {
       style = 'casual', // casual, professional, enthusiastic
-      duration = clipAnalysis.duration || 30
+      duration = clipAnalysis.duration || 30,
+      scriptPrompt = null, // Custom prompt from style researcher
+      fileRef = null // Pre-uploaded Gemini file ref { mimeType, uri } to avoid re-upload
     } = options;
 
-    // Upload video to Gemini
-    console.log('Uploading clip to Gemini for script generation...');
-    const uploadResult = await fileManager.uploadFile(clipPath, {
-      mimeType: this._getMimeType(clipPath),
-      displayName: 'cooking-clip'
-    });
+    let file;
+    let weUploaded = false;
 
-    // Wait for processing
-    let file = uploadResult.file;
-    while (file.state === 'PROCESSING') {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      file = await fileManager.getFile(file.name);
+    if (fileRef) {
+      // Use pre-uploaded file reference
+      file = { mimeType: fileRef.mimeType, uri: fileRef.uri };
+    } else {
+      // Upload video to Gemini
+      console.log('Uploading clip to Gemini for script generation...');
+      const uploadResult = await fileManager.uploadFile(clipPath, {
+        mimeType: this._getMimeType(clipPath),
+        displayName: 'cooking-clip'
+      });
+
+      file = uploadResult.file;
+      weUploaded = true;
+
+      while (file.state === 'PROCESSING') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        file = await fileManager.getFile(file.name);
+      }
+
+      if (file.state === 'FAILED') {
+        throw new Error('Video processing failed');
+      }
     }
 
-    if (file.state === 'FAILED') {
-      throw new Error('Video processing failed');
-    }
+    let prompt;
+    if (scriptPrompt) {
+      // Use custom prompt from style researcher
+      prompt = `Watch this cooking video and write a voiceover script.
 
-    const styleGuides = {
-      casual: 'friendly and conversational, like talking to a friend',
-      professional: 'polished and informative, like a cooking show host',
-      enthusiastic: 'excited and energetic, like a food vlogger'
-    };
+DURATION: ${Math.round(duration)} seconds
+WORD COUNT: ~${Math.round(duration * 2.5)} words (~150 words/minute speaking pace)
 
-    const prompt = `Watch this cooking video and write a voiceover script for it.
+STYLE DIRECTION: ${scriptPrompt}
+
+Write a script that:
+- Matches the video's pacing and timing
+- Sounds natural when spoken aloud
+
+Return ONLY the script. No formatting, no timestamps, no stage directions.`;
+    } else {
+      const styleGuides = {
+        casual: 'friendly and conversational, like talking to a friend',
+        professional: 'polished and informative, like a cooking show host',
+        enthusiastic: 'excited and energetic, like a food vlogger'
+      };
+
+      prompt = `Watch this cooking video and write a voiceover script for it.
 
 DURATION: ${Math.round(duration)} seconds
 STYLE: ${styleGuides[style] || styleGuides.casual}
@@ -63,14 +90,18 @@ Write a script that:
 - Is about ${Math.round(duration * 2.5)} words (~150 words/minute speaking pace)
 
 Return ONLY the script. No formatting, no timestamps, no stage directions.`;
+    }
 
-    const result = await this.model.generateContent([
-      { fileData: { mimeType: file.mimeType, fileUri: file.uri } },
-      prompt
-    ]);
+    const fileData = fileRef
+      ? { fileData: { mimeType: fileRef.mimeType, fileUri: fileRef.uri } }
+      : { fileData: { mimeType: file.mimeType, fileUri: file.uri } };
 
-    // Clean up
-    await fileManager.deleteFile(file.name).catch(() => {});
+    const result = await this.model.generateContent([fileData, prompt]);
+
+    // Only clean up if we uploaded the file ourselves
+    if (weUploaded && file.name) {
+      await fileManager.deleteFile(file.name).catch(() => {});
+    }
 
     return result.response.text().trim();
   }
@@ -87,7 +118,8 @@ Return ONLY the script. No formatting, no timestamps, no stage directions.`;
    * @param {string} outputPath - Path for output audio file
    * @returns {Promise<string>} - Path to generated audio
    */
-  async generateAudio(script, outputPath) {
+  async generateAudio(script, outputPath, options = {}) {
+    const { voice = null } = options;
     const audioChunks = [];
 
     return new Promise((resolve, reject) => {
@@ -112,7 +144,7 @@ Return ONLY the script. No formatting, no timestamps, no stage directions.`;
               speechConfig: {
                 voiceConfig: {
                   prebuiltVoiceConfig: {
-                    voiceName: config.geminiLive.voiceName
+                    voiceName: voice || config.geminiLive.voiceName
                   }
                 }
               }
@@ -266,22 +298,36 @@ Return ONLY the script. No formatting, no timestamps, no stage directions.`;
    * @param {string} script - Voiceover script (optional, for context)
    * @returns {Promise<{title: string, description: string, tags: string[]}>}
    */
-  async generateMetadata(clipPath, script = '') {
-    // Upload video
-    const uploadResult = await fileManager.uploadFile(clipPath, {
-      mimeType: this._getMimeType(clipPath),
-      displayName: 'cooking-clip-metadata'
-    });
+  async generateMetadata(clipPath, script = '', options = {}) {
+    const { fileRef = null } = options;
 
-    let file = uploadResult.file;
-    while (file.state === 'PROCESSING') {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      file = await fileManager.getFile(file.name);
+    let file;
+    let weUploaded = false;
+
+    if (fileRef) {
+      file = { mimeType: fileRef.mimeType, uri: fileRef.uri };
+    } else {
+      const uploadResult = await fileManager.uploadFile(clipPath, {
+        mimeType: this._getMimeType(clipPath),
+        displayName: 'cooking-clip-metadata'
+      });
+
+      file = uploadResult.file;
+      weUploaded = true;
+
+      while (file.state === 'PROCESSING') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        file = await fileManager.getFile(file.name);
+      }
+
+      if (file.state === 'FAILED') {
+        throw new Error('Video processing failed');
+      }
     }
 
-    if (file.state === 'FAILED') {
-      throw new Error('Video processing failed');
-    }
+    const fileData = fileRef
+      ? { fileData: { mimeType: fileRef.mimeType, fileUri: fileRef.uri } }
+      : { fileData: { mimeType: file.mimeType, fileUri: file.uri } };
 
     const prompt = `Watch this cooking video and generate YouTube Shorts metadata.
 
@@ -294,12 +340,11 @@ Return JSON only:
   "tags": ["relevant", "tags", "max", "10"]
 }`;
 
-    const result = await this.model.generateContent([
-      { fileData: { mimeType: file.mimeType, fileUri: file.uri } },
-      prompt
-    ]);
+    const result = await this.model.generateContent([fileData, prompt]);
 
-    await fileManager.deleteFile(file.name).catch(() => {});
+    if (weUploaded && file.name) {
+      await fileManager.deleteFile(file.name).catch(() => {});
+    }
 
     const text = result.response.text();
     try {

@@ -11,6 +11,10 @@ import { VoiceoverGenerator } from '../services/voiceover-generator.js';
 import { VideoProcessor } from '../services/video-processor.js';
 import { YouTubeUploader } from '../services/youtube-uploader.js';
 import { SubtitleGenerator } from '../services/subtitle-generator.js';
+import { StyleResearcher } from '../services/style-researcher.js';
+import { GoogleAIFileManager } from '@google/generative-ai/server';
+
+const fileManager = new GoogleAIFileManager(config.geminiApiKey);
 
 const router = Router();
 
@@ -43,6 +47,7 @@ const clipSelector = new ClipSelector();
 const voiceoverGenerator = new VoiceoverGenerator();
 const youtubeUploader = new YouTubeUploader();
 const subtitleGenerator = new SubtitleGenerator();
+const styleResearcher = new StyleResearcher();
 
 /**
  * POST /api/shorts/check-cooking
@@ -127,10 +132,10 @@ router.get('/status/:jobId', (req, res) => {
       youtubeVideoId: job.youtubeVideoId,
       youtubeUrl: job.youtubeUrl,
       createdAt: job.createdAt,
-      // Dual output paths
-      outputPathNarrated: job.outputPath,  // Narrated version with voiceover + subtitles
-      outputPathAsmr: job.outputPathAsmr,  // ASMR version with cooking sounds only
+      variants: job.variants,
       // Backwards compatibility
+      outputPathNarrated: job.outputPath,
+      outputPathAsmr: job.outputPathAsmr,
       outputPath: job.outputPath
     });
   } catch (error) {
@@ -195,9 +200,17 @@ router.get('/preview/:jobId', async (req, res) => {
 
 /**
  * GET /api/shorts/preview-asmr/:jobId
- * Stream the ASMR video for preview
+ * Legacy redirect — preserved for backwards compat
  */
-router.get('/preview-asmr/:jobId', async (req, res) => {
+router.get('/preview-asmr/:jobId', (req, res) => {
+  res.redirect(`/api/shorts/preview/${req.params.jobId}/asmr`);
+});
+
+/**
+ * GET /api/shorts/preview/:jobId/:variant
+ * Stream any variant video for preview (e.g. /preview/abc/narrated, /preview/abc/asmr)
+ */
+router.get('/preview/:jobId/:variant', async (req, res) => {
   try {
     const job = ShortsJobModel.getById(req.params.jobId);
 
@@ -205,18 +218,19 @@ router.get('/preview-asmr/:jobId', async (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    if (!job.outputPathAsmr) {
-      return res.status(400).json({ error: 'ASMR video not ready yet' });
+    const variant = job.variants.find(v => v.type === req.params.variant);
+    if (!variant || !variant.outputPath) {
+      return res.status(400).json({ error: `${req.params.variant} video not ready yet` });
     }
 
     // Check file exists
     try {
-      await fs.access(job.outputPathAsmr);
+      await fs.access(variant.outputPath);
     } catch {
-      return res.status(404).json({ error: 'ASMR video file not found' });
+      return res.status(404).json({ error: `${req.params.variant} video file not found` });
     }
 
-    const stat = statSync(job.outputPathAsmr);
+    const stat = statSync(variant.outputPath);
     const fileSize = stat.size;
     const range = req.headers.range;
 
@@ -226,7 +240,7 @@ router.get('/preview-asmr/:jobId', async (req, res) => {
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
       const chunkSize = end - start + 1;
 
-      const stream = createReadStream(job.outputPathAsmr, { start, end });
+      const stream = createReadStream(variant.outputPath, { start, end });
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
@@ -239,10 +253,10 @@ router.get('/preview-asmr/:jobId', async (req, res) => {
         'Content-Length': fileSize,
         'Content-Type': 'video/mp4'
       });
-      createReadStream(job.outputPathAsmr).pipe(res);
+      createReadStream(variant.outputPath).pipe(res);
     }
   } catch (error) {
-    console.error('ASMR preview error:', error);
+    console.error('Variant preview error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -392,14 +406,14 @@ router.delete('/:jobId', async (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Delete associated files
+    // Delete associated files (including all variant outputs)
+    const variantPaths = job.variants.map(v => v.outputPath).filter(Boolean);
     const filesToDelete = [
       job.videoPath,
       job.clipPath,
       job.voiceoverPath,
-      job.outputPath,
-      job.outputPathAsmr,
-      job.thumbnailPath
+      job.thumbnailPath,
+      ...variantPaths
     ].filter(Boolean);
 
     await Promise.all(
@@ -418,17 +432,128 @@ router.delete('/:jobId', async (req, res) => {
 });
 
 /**
+ * Process a single style variant
+ */
+async function processOneStyle(jobId, outputDir, clipPath, clipFile, clipAnalysis, clipDuration, style) {
+  const intermediates = [];
+
+  if (style.hasVoiceover) {
+    // 1. Generate script with style-specific prompt
+    const script = await voiceoverGenerator.generateScript(clipPath, clipAnalysis, {
+      duration: clipDuration,
+      scriptPrompt: style.scriptPrompt,
+      fileRef: clipFile
+    });
+
+    ShortsJobModel.setScript(jobId, script);
+
+    // 2. Generate voiceover audio with style-specific voice
+    const voiceoverPath = join(outputDir, `voiceover_${style.type}.wav`);
+    await voiceoverGenerator.generateAudio(script, voiceoverPath, { voice: style.voice });
+    intermediates.push(voiceoverPath);
+
+    // 3. Generate subtitles (try/catch, skip on fail)
+    let subtitlePath = null;
+    if (style.subtitles) {
+      try {
+        subtitlePath = join(outputDir, `subtitles_${style.type}.ass`);
+        await subtitleGenerator.generate(voiceoverPath, subtitlePath, {
+          wordsPerGroup: style.subtitles.wordsPerGroup || 3,
+          fontSize: style.subtitles.fontSize || 52,
+          marginV: 180,
+          uppercase: style.subtitles.uppercase !== false
+        });
+        console.log(`Subtitles generated for ${style.type}: ${subtitlePath}`);
+      } catch (err) {
+        console.warn(`Subtitle generation failed for ${style.type}, continuing without:`, err.message);
+        subtitlePath = null;
+      }
+    }
+
+    // 4. Mix audio tracks
+    const mixedPath = join(outputDir, `mixed_${style.type}.mp4`);
+    await VideoProcessor.mixAudioTracks(clipPath, voiceoverPath, mixedPath, {
+      originalVolume: style.audioMix?.originalVolume ?? 0.3,
+      voiceoverVolume: style.audioMix?.voiceoverVolume ?? 1.0
+    });
+    intermediates.push(mixedPath);
+
+    // 5. Convert to shorts format (9:16)
+    const shortsPath = join(outputDir, `shorts_${style.type}.mp4`);
+    await VideoProcessor.convertToShortsFormat(mixedPath, shortsPath, { method: 'crop' });
+    intermediates.push(shortsPath);
+
+    // 6. Burn subtitles if available
+    let finalPath;
+    if (subtitlePath) {
+      finalPath = join(outputDir, `final_${style.type}.mp4`);
+      await VideoProcessor.burnSubtitles(shortsPath, subtitlePath, finalPath);
+      intermediates.push(subtitlePath);
+    } else {
+      finalPath = shortsPath;
+      // Don't clean up shortsPath since it IS the final output
+      const idx = intermediates.indexOf(shortsPath);
+      if (idx !== -1) intermediates.splice(idx, 1);
+    }
+
+    // 7. Save variant
+    ShortsJobModel.addVariant(jobId, {
+      type: style.type,
+      label: style.label,
+      outputPath: finalPath,
+      script,
+      voice: style.voice
+    });
+
+    // 8. Clean intermediates (keep final output)
+    for (const f of intermediates) {
+      if (f !== finalPath) await fs.unlink(f).catch(() => {});
+    }
+
+    return finalPath;
+  } else {
+    // Non-voiceover path
+    let inputPath = clipPath;
+
+    // 1. Apply audio treatment if specified
+    if (style.audioTreatment === 'asmr') {
+      const asmrPath = join(outputDir, `asmr_audio_${style.type}.mp4`);
+      await VideoProcessor.reduceSpeech(clipPath, asmrPath);
+      inputPath = asmrPath;
+      intermediates.push(asmrPath);
+    }
+
+    // 2. Convert to shorts format (9:16)
+    const finalPath = join(outputDir, `final_${style.type}.mp4`);
+    await VideoProcessor.convertToShortsFormat(inputPath, finalPath, { method: 'crop' });
+
+    // 3. Save variant
+    ShortsJobModel.addVariant(jobId, {
+      type: style.type,
+      label: style.label,
+      outputPath: finalPath
+    });
+
+    // 4. Clean intermediates
+    for (const f of intermediates) {
+      await fs.unlink(f).catch(() => {});
+    }
+
+    return finalPath;
+  }
+}
+
+/**
  * Async processing pipeline for shorts creation
  */
 async function processShort(jobId) {
-  // 10% - Start analyzing
+  // === Phase 1: Shared analysis (0-40%) ===
   ShortsJobModel.updateProgress(jobId, 10, 'analyzing');
 
   const job = ShortsJobModel.getById(jobId);
   const outputDir = join(config.paths.shorts, jobId);
   await fs.mkdir(outputDir, { recursive: true });
 
-  // Analyze video and find best clip (10% -> 40%)
   ShortsJobModel.updateStatus(jobId, 'processing', 15);
 
   const clipAnalysis = await clipSelector.analyzeAndSelectClip(job.videoPath, {
@@ -437,7 +562,6 @@ async function processShort(jobId) {
     targetDuration: 30
   });
 
-  // 40% - Extract clip
   ShortsJobModel.updateProgress(jobId, 40, 'clip_extracted');
 
   const clipPath = join(outputDir, 'clip.mp4');
@@ -449,119 +573,91 @@ async function processShort(jobId) {
   );
 
   ShortsJobModel.setClipInfo(jobId, clipAnalysis.startTime, clipAnalysis.endTime, clipPath);
-
-  // 55% - Generate voiceover script
-  ShortsJobModel.updateProgress(jobId, 50, 'generating_script');
-
   const clipDuration = clipAnalysis.endTime - clipAnalysis.startTime;
-  const script = await voiceoverGenerator.generateScript(clipPath, clipAnalysis, {
-    style: 'casual',
-    duration: clipDuration
+
+  // === Phase 2: Style research (40-45%) ===
+  ShortsJobModel.updateProgress(jobId, 42, 'researching_styles');
+
+  // Upload clip to Gemini File API once — shared across style research + script gen
+  console.log('Uploading clip to Gemini for style research...');
+  const uploadResult = await fileManager.uploadFile(clipPath, {
+    mimeType: 'video/mp4',
+    displayName: 'cooking-clip-styles'
   });
 
-  ShortsJobModel.setScript(jobId, script);
-  ShortsJobModel.updateProgress(jobId, 55, 'script_ready');
-
-  // 75% - Generate voiceover audio
-  ShortsJobModel.updateProgress(jobId, 60, 'generating_voiceover');
-
-  const voiceoverPath = join(outputDir, 'voiceover.wav');
-  await voiceoverGenerator.generateAudio(script, voiceoverPath);
-
-  ShortsJobModel.setVoiceoverPath(jobId, voiceoverPath);
-  ShortsJobModel.updateProgress(jobId, 75, 'voiceover_done');
-
-  // 78% - Generate subtitles from voiceover using whisper.cpp
-  let subtitlePath = null;
-  ShortsJobModel.updateProgress(jobId, 78, 'generating_subtitles');
-  try {
-    subtitlePath = join(outputDir, 'subtitles.ass');
-    await subtitleGenerator.generate(voiceoverPath, subtitlePath, {
-      wordsPerGroup: 3,
-      fontSize: 52,
-      marginV: 180,
-      uppercase: true
-    });
-    console.log(`Subtitles generated: ${subtitlePath}`);
-  } catch (err) {
-    console.warn('Subtitle generation failed, continuing without:', err.message);
-    subtitlePath = null;
+  let clipFile = uploadResult.file;
+  while (clipFile.state === 'PROCESSING') {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    clipFile = await fileManager.getFile(clipFile.name);
   }
 
-  // === NARRATED PATH ===
-  // 80% - Mix audio tracks (original + voiceover)
-  ShortsJobModel.updateProgress(jobId, 80, 'mixing_audio');
-
-  const mixedPath = join(outputDir, 'mixed.mp4');
-  await VideoProcessor.mixAudioTracks(clipPath, voiceoverPath, mixedPath, {
-    originalVolume: 0.3,
-    voiceoverVolume: 1.0
-  });
-
-  ShortsJobModel.updateProgress(jobId, 84, 'audio_mixed');
-
-  // 86% - Convert to Shorts format (9:16)
-  ShortsJobModel.updateProgress(jobId, 86, 'converting_format');
-
-  const shortsPath = join(outputDir, 'shorts_narrated.mp4');
-  await VideoProcessor.convertToShortsFormat(mixedPath, shortsPath, {
-    method: 'crop'
-  });
-
-  // 90% - Burn subtitles if available
-  let narratedPath;
-  if (subtitlePath) {
-    ShortsJobModel.updateProgress(jobId, 90, 'burning_subtitles');
-    narratedPath = join(outputDir, 'final_narrated.mp4');
-    await VideoProcessor.burnSubtitles(shortsPath, subtitlePath, narratedPath);
-  } else {
-    narratedPath = shortsPath;
+  if (clipFile.state === 'FAILED') {
+    throw new Error('Gemini file processing failed');
   }
 
-  // === ASMR PATH ===
-  // 93% - Generate ASMR version (cooking sounds only, speech reduced)
-  ShortsJobModel.updateProgress(jobId, 93, 'generating_asmr');
+  const clipFileRef = { mimeType: clipFile.mimeType, uri: clipFile.uri };
+  const styles = await styleResearcher.recommendStyles(clipFileRef, clipAnalysis, { clipDuration });
+  console.log(`Style researcher recommended: ${styles.map(s => s.type).join(', ')}`);
 
-  // Reduce speech from original clip audio
-  const asmrAudioPath = join(outputDir, 'asmr_audio.mp4');
-  await VideoProcessor.reduceSpeech(clipPath, asmrAudioPath);
+  ShortsJobModel.updateProgress(jobId, 45, 'styles_ready');
 
-  // 96% - Convert ASMR version to shorts format (9:16)
-  ShortsJobModel.updateProgress(jobId, 96, 'converting_asmr');
-  const asmrPath = join(outputDir, 'final_asmr.mp4');
-  await VideoProcessor.convertToShortsFormat(asmrAudioPath, asmrPath, {
-    method: 'crop'
-  });
+  // === Phase 3: Per-style processing (45-90%) ===
+  const perStyle = 45 / styles.length;
+  let firstOutputPath = null;
+  let successCount = 0;
+  const errors = [];
 
-  // Save both output paths
-  ShortsJobModel.setAsmrPath(jobId, asmrPath);
+  for (let i = 0; i < styles.length; i++) {
+    const style = styles[i];
+    const base = 45 + (i * perStyle);
 
-  // Generate thumbnail (shared between both versions)
+    ShortsJobModel.updateProgress(jobId, Math.round(base), `processing_${style.type}`);
+
+    try {
+      const outputPath = await processOneStyle(
+        jobId, outputDir, clipPath, clipFileRef, clipAnalysis, clipDuration, style
+      );
+      if (!firstOutputPath) firstOutputPath = outputPath;
+      successCount++;
+      console.log(`Style ${style.type} (${style.label}) complete: ${outputPath}`);
+    } catch (err) {
+      console.error(`Style ${style.type} failed:`, err.message);
+      errors.push(`${style.type}: ${err.message}`);
+    }
+
+    ShortsJobModel.updateProgress(jobId, Math.round(base + perStyle), `done_${style.type}`);
+  }
+
+  // Fail the whole job only if ALL styles failed
+  if (successCount === 0) {
+    throw new Error(`All styles failed: ${errors.join('; ')}`);
+  }
+
+  // === Phase 4: Finalize (90-100%) ===
+  ShortsJobModel.updateProgress(jobId, 92, 'generating_thumbnail');
+
+  // Generate thumbnail from first successful variant
   const thumbnailPath = join(outputDir, 'thumbnail.jpg');
   const thumbnailTimestamp = Math.max(1, Math.min(clipDuration / 3, clipDuration - 1));
-  await VideoProcessor.createThumbnail(narratedPath, thumbnailPath, {
+  await VideoProcessor.createThumbnail(firstOutputPath, thumbnailPath, {
     width: 1080,
     height: 1920,
     timestamp: thumbnailTimestamp
   });
 
-  ShortsJobModel.setOutputPath(jobId, narratedPath, thumbnailPath);
+  ShortsJobModel.setOutputPath(jobId, firstOutputPath, thumbnailPath);
 
-  // Generate metadata by watching the clip
-  const metadata = await voiceoverGenerator.generateMetadata(clipPath, script);
+  // Generate metadata
+  ShortsJobModel.updateProgress(jobId, 95, 'generating_metadata');
+  const metadata = await voiceoverGenerator.generateMetadata(clipPath, '', { fileRef: clipFileRef });
   ShortsJobModel.setMetadata(jobId, metadata);
+
+  // Clean up shared Gemini file
+  await fileManager.deleteFile(clipFile.name).catch(() => {});
 
   // 100% - Complete
   ShortsJobModel.complete(jobId);
-
-  // Clean up intermediate files
-  await fs.unlink(mixedPath).catch(() => {});
-  await fs.unlink(asmrAudioPath).catch(() => {});
-  if (subtitlePath && narratedPath !== shortsPath) {
-    await fs.unlink(shortsPath).catch(() => {});
-  }
-
-  console.log(`Shorts processing complete for job ${jobId}`);
+  console.log(`Shorts processing complete for job ${jobId} — ${successCount}/${styles.length} styles succeeded`);
 }
 
 export default router;
