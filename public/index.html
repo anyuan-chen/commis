@@ -4,44 +4,626 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>Pique</title>
-  <link rel="stylesheet" href="css/simple.css">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Get Started</title>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      /* Warm dark palette */
+      --bg: #1a1816;
+      --text: #faf6f1;
+      --text-dim: #a39e98;
+      --text-muted: #6b6560;
+      --accent: #e8a849;
+      --accent-soft: rgba(232, 168, 73, 0.15);
+      --accent-glow: rgba(232, 168, 73, 0.25);
+      --border: rgba(250, 246, 241, 0.08);
+      --card-bg: rgba(250, 246, 241, 0.04);
+      --card-hover: rgba(250, 246, 241, 0.08);
+
+      /* Typography */
+      --font-serif: 'Georgia', 'Times New Roman', serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+
+      /* Easing */
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .container {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      padding: env(safe-area-inset-top, 48px) 28px env(safe-area-inset-bottom, 28px);
+      max-width: 400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* Screens */
+    .screen {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    .screen.active {
+      display: flex;
+      animation: fadeSlideIn 0.5s var(--ease-out);
+    }
+
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+      padding: 40px 0 32px;
+    }
+
+    .header h1 {
+      font-family: var(--font-serif);
+      font-size: 28px;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      margin-bottom: 12px;
+      line-height: 1.2;
+    }
+
+    .header p {
+      font-size: 16px;
+      color: var(--text-dim);
+      letter-spacing: 0.01em;
+    }
+
+    /* Search Input */
+    .search-container {
+      position: relative;
+      margin-bottom: 20px;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 18px 18px 18px 52px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text);
+      font-size: 17px;
+      outline: none;
+      transition: all 0.3s var(--ease-out);
+    }
+
+    .search-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .search-input:focus {
+      border-color: var(--accent);
+      background: var(--card-hover);
+      box-shadow: 0 0 0 4px var(--accent-soft), 0 8px 32px rgba(0,0,0,0.2);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 18px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      transition: color 0.3s var(--ease-out);
+    }
+
+    .search-input:focus ~ .search-icon,
+    .search-container:focus-within .search-icon {
+      color: var(--accent);
+    }
+
+    /* Results List */
+    .results {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .result-item {
+      display: flex;
+      align-items: center;
+      padding: 18px 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: all 0.2s var(--ease-out);
+      animation: fadeSlideIn 0.4s var(--ease-out) backwards;
+    }
+
+    .result-item:nth-child(1) { animation-delay: 0.05s; }
+    .result-item:nth-child(2) { animation-delay: 0.1s; }
+    .result-item:nth-child(3) { animation-delay: 0.15s; }
+    .result-item:nth-child(4) { animation-delay: 0.2s; }
+    .result-item:nth-child(5) { animation-delay: 0.25s; }
+
+    .result-item:hover {
+      background: var(--card-hover);
+      border-color: rgba(232, 168, 73, 0.3);
+      transform: translateX(4px);
+    }
+
+    .result-item:active {
+      transform: scale(0.98) translateX(4px);
+    }
+
+    .result-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .result-name {
+      font-size: 17px;
+      font-weight: 500;
+      margin-bottom: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .result-address {
+      font-size: 14px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .result-arrow {
+      color: var(--text-muted);
+      margin-left: 12px;
+      transition: all 0.2s var(--ease-out);
+    }
+
+    .result-item:hover .result-arrow {
+      color: var(--accent);
+      transform: translateX(4px);
+    }
+
+    .no-results {
+      text-align: center;
+      padding: 56px 24px;
+      color: var(--text-dim);
+      font-size: 15px;
+    }
+
+    /* Loading/Checking Screen */
+    .center-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 48px 24px;
+    }
+
+    .spinner {
+      width: 52px;
+      height: 52px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+      margin-bottom: 28px;
+      box-shadow: 0 0 20px var(--accent-soft);
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .status-text {
+      font-family: var(--font-serif);
+      font-size: 20px;
+      font-weight: 400;
+      color: var(--text);
+      margin-bottom: 10px;
+    }
+
+    .status-sub {
+      font-size: 15px;
+      color: var(--text-dim);
+    }
+
+    /* Upload Screen */
+    .upload-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      border: 2px dashed var(--border);
+      border-radius: 20px;
+      margin: 24px 0;
+      padding: 56px 28px;
+      cursor: pointer;
+      transition: all 0.3s var(--ease-out);
+      background: linear-gradient(180deg, var(--card-bg) 0%, transparent 100%);
+    }
+
+    .upload-area:hover {
+      border-color: rgba(232, 168, 73, 0.4);
+      background: var(--accent-soft);
+    }
+
+    .upload-area:active {
+      border-color: var(--accent);
+      transform: scale(0.99);
+    }
+
+    .upload-icon {
+      width: 72px;
+      height: 72px;
+      background: var(--accent-soft);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      color: var(--accent);
+      animation: float 3s ease-in-out infinite;
+      box-shadow: 0 8px 32px var(--accent-soft);
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    .upload-title {
+      font-family: var(--font-serif);
+      font-size: 20px;
+      font-weight: 400;
+      margin-bottom: 10px;
+    }
+
+    .upload-hint {
+      font-size: 15px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      max-width: 260px;
+    }
+
+    /* Progress Bar */
+    .progress-container {
+      width: 100%;
+      max-width: 280px;
+      margin: 28px 0;
+    }
+
+    .progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #f5c874, var(--accent));
+      border-radius: 3px;
+      transition: width 0.4s var(--ease-out);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .progress-text {
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-dim);
+      margin-top: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Hidden file input */
+    #video-input {
+      display: none;
+    }
+
+    /* Subtle ambient glow */
+    .container::before {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(ellipse at center, var(--accent-soft) 0%, transparent 70%);
+      pointer-events: none;
+      opacity: 0.4;
+    }
+
+    /* Menu Confirmation Screen */
+    .menu-list {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      padding: 16px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 12px;
+      transition: all 0.2s var(--ease-out);
+      animation: fadeSlideIn 0.4s var(--ease-out) backwards;
+    }
+
+    .menu-item:nth-child(1) { animation-delay: 0.05s; }
+    .menu-item:nth-child(2) { animation-delay: 0.1s; }
+    .menu-item:nth-child(3) { animation-delay: 0.15s; }
+    .menu-item:nth-child(4) { animation-delay: 0.2s; }
+    .menu-item:nth-child(5) { animation-delay: 0.25s; }
+
+    .menu-item.needs-review {
+      border-color: rgba(245, 158, 11, 0.4);
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    .menu-item.removed {
+      opacity: 0.4;
+      text-decoration: line-through;
+    }
+
+    .item-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .item-name {
+      display: block;
+      font-size: 17px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      outline: none;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .item-name:focus {
+      background: var(--card-hover);
+    }
+
+    .item-details {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: var(--text-dim);
+    }
+
+    .item-price {
+      outline: none;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: background 0.2s;
+      min-width: 50px;
+    }
+
+    .item-price:focus {
+      background: var(--card-hover);
+    }
+
+    .item-category {
+      color: var(--text-muted);
+    }
+
+    .item-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 12px;
+    }
+
+    .status-badge {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-badge.confirmed {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
+
+    .status-badge.review {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+    }
+
+    .remove-btn {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 20px;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .remove-btn:hover {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+    }
+
+    .action-bar {
+      padding: 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 18px 24px;
+      background: var(--accent);
+      border: none;
+      border-radius: 14px;
+      color: var(--bg);
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s var(--ease-out);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px var(--accent-glow);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      width: 100%;
+      padding: 14px 24px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text-dim);
+      font-size: 15px;
+      cursor: pointer;
+      transition: all 0.2s var(--ease-out);
+    }
+
+    .btn-secondary:hover {
+      background: var(--card-bg);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .menu-summary {
+      text-align: center;
+      padding: 12px 0;
+      font-size: 14px;
+      color: var(--text-dim);
+    }
+
+    .menu-summary strong {
+      color: var(--accent);
+    }
+  </style>
 </head>
 <body>
-  <div id="app">
-    <!-- Upload -->
-    <div id="upload-screen" class="screen active">
-      <div class="screen-content">
-        <div class="upload-box" id="upload-box">
-          <div class="upload-icon">📹</div>
-        </div>
-        <input type="file" id="video-input" accept="video/*" capture="environment" hidden>
+  <div class="container">
+    <!-- Search Screen -->
+    <div id="screen-search" class="screen active">
+      <div class="header">
+        <h1>What's your place called?</h1>
+        <p>Let's get you set up</p>
       </div>
+
+      <div class="search-container">
+        <i data-lucide="search" class="search-icon" width="20" height="20"></i>
+        <input type="text" class="search-input" id="search-input" placeholder="Search for your restaurant..." autocomplete="off">
+      </div>
+
+      <div class="results" id="results"></div>
     </div>
 
-    <!-- Processing -->
-    <div id="processing-screen" class="screen">
-      <div class="screen-content">
+    <!-- Checking Screen -->
+    <div id="screen-checking" class="screen">
+      <div class="center-content">
         <div class="spinner"></div>
+        <div class="status-text">One moment...</div>
+        <div class="status-sub" id="checking-name"></div>
       </div>
     </div>
 
-    <!-- Voice -->
-    <div id="voice-screen" class="screen">
-      <div class="screen-content">
-        <button class="voice-btn" id="voice-btn">
-          <span class="mic-icon">🎤</span>
-        </button>
-        <div class="status" id="status"></div>
+    <!-- Upload Screen -->
+    <div id="screen-upload" class="screen">
+      <div class="header">
+        <h1>Show us around</h1>
+        <p>A quick video is all we need</p>
       </div>
-      <button class="back-btn" id="back-btn">←</button>
+
+      <div class="upload-area" id="upload-area">
+        <div class="upload-icon">
+          <i data-lucide="video" width="32" height="32"></i>
+        </div>
+        <div class="upload-title">Add a video</div>
+        <div class="upload-hint">Record or choose a walkthrough of your space, menu, and anything that makes your place special</div>
+      </div>
     </div>
 
-    <div id="toast" class="toast"></div>
+    <!-- Processing Screen -->
+    <div id="screen-processing" class="screen">
+      <div class="center-content">
+        <div class="spinner"></div>
+        <div class="status-text" id="processing-status">Analyzing your video...</div>
+        <div class="progress-container">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-text" id="progress-text">0%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Menu Confirmation Screen -->
+    <div id="screen-confirm" class="screen">
+      <div class="header">
+        <h1>Confirm your menu</h1>
+        <p>We found these items - make any corrections</p>
+      </div>
+
+      <div class="menu-summary" id="menu-summary"></div>
+
+      <div class="menu-list" id="menu-items">
+        <!-- Populated by JS -->
+      </div>
+
+      <div class="action-bar">
+        <button id="confirm-btn" class="btn-primary">Looks good</button>
+        <button id="add-item-btn" class="btn-secondary">+ Add missing item</button>
+      </div>
+    </div>
   </div>
 
-  <script src="js/media-utils.js"></script>
-  <script src="js/voice-client.js"></script>
-  <script src="js/simple-app.js"></script>
+  <input type="file" id="video-input" accept="video/*">
+
+  <script>lucide.createIcons();</script>
+  <script src="onboard.js"></script>
 </body>
 </html>
