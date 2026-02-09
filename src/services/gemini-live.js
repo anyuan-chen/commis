@@ -15,8 +15,13 @@ export class GeminiLiveClient {
     this.sessionId = null;
     this.onAudioResponse = null;
     this.onTextResponse = null;
+    this.onInputTranscript = null;
+    this.onOutputTranscript = null;
+    this.onTurnComplete = null;
+    this.onModelTurnStart = null;
     this.onError = null;
     this.onClose = null;
+    this._modelTurnActive = false;
   }
 
   /**
@@ -78,7 +83,9 @@ export class GeminiLiveClient {
         },
         tools: [{
           functionDeclarations: this.tools
-        }]
+        }],
+        outputAudioTranscription: {},
+        inputAudioTranscription: {}
       }
     };
 
@@ -154,8 +161,25 @@ export class GeminiLiveClient {
     if (message.serverContent) {
       const content = message.serverContent;
 
+      // User speech transcript
+      if (content.inputTranscription?.text) {
+        if (this.onInputTranscript) this.onInputTranscript(content.inputTranscription.text);
+      }
+
+      // Model speech transcript (output transcription)
+      const outputTranscript = content.outputTranscription || content.output_transcription;
+      if (outputTranscript?.text) {
+        if (this.onOutputTranscript) this.onOutputTranscript(outputTranscript.text);
+      }
+
       // Handle model turn (response)
       if (content.modelTurn) {
+        // Signal model started responding (first chunk of a new turn)
+        if (!this._modelTurnActive) {
+          this._modelTurnActive = true;
+          if (this.onModelTurnStart) this.onModelTurnStart();
+        }
+
         for (const part of content.modelTurn.parts || []) {
           // Audio response
           if (part.inlineData) {
@@ -177,6 +201,8 @@ export class GeminiLiveClient {
       // Turn complete
       if (content.turnComplete) {
         console.log('Turn complete');
+        this._modelTurnActive = false;
+        if (this.onTurnComplete) this.onTurnComplete();
       }
     }
 
@@ -273,25 +299,26 @@ ${reviewSection}
 
 YOUR CAPABILITIES:
 1. Update restaurant information (name, description, hours, contact info)
-2. Edit menu items (add, update, remove dishes and prices)
-3. Manage photos (add photos, set primary image)
-4. Customize website style (colors, themes, layout)
-5. Modify brochure design
-6. Deploy website to the internet
+2. Edit menu items (add, update, remove dishes and prices) — the website auto-updates and deploys
+3. Customize website style (colors, themes, layout)
+4. Modify the website with natural language (modify_website) — for free-form changes
+5. Create YouTube Shorts from cooking videos (create_youtube_short) — ask user to upload a video
+6. Generate and deploy a website (create_website)
 7. Regenerate marketing materials
 8. Get review insights and digest summaries
+9. Get Google Ads suggestions (suggest_google_ads)
 
 GUIDELINES:
 - Be conversational and helpful
-- Ask clarifying questions if the user's request is unclear
-- Confirm changes before making them for important updates
-- Suggest improvements to make their marketing materials better
 - Keep responses concise since this is a voice interface
+- When adding a menu item, ALWAYS ask the user for the price and category before calling addMenuItem. Never guess or make up a price
+- When the user wants to create a Short, immediately call create_youtube_short (even without a videoUrl) — the system will prompt the user to upload a video
+- When you add/update/remove menu items, the website updates automatically — tell the user their site is live
 - Proactively share review insights when they're relevant to what the user is working on
+- After a tool completes, keep your response very brief. Do NOT repeat URLs or links — the UI already shows clickable result cards
+- When shorts are created, briefly mention the 2 styles that were chosen and why they fit (e.g. "I went with a high-energy narration with Fenrir's voice to match the fast plating, and a cinematic ASMR version to highlight those sizzling sounds"). Keep it to 1-2 sentences
 
-When the user asks you to make changes, use the appropriate tool to update the data. Always confirm what you changed.
-
-If asked about missing information (like address or phone number), ask the user to provide it.`;
+When the user asks you to make changes, use the appropriate tool to update the data. Always confirm what you changed.`;
 }
 
 /**
@@ -565,6 +592,25 @@ export const voiceTools = [
         category: {
           type: 'string',
           description: 'Specific menu category to feature, or omit for full menu'
+        }
+      }
+    }
+  },
+  {
+    name: 'generateTestimonialGraphic',
+    description: 'Generate a testimonial graphic featuring a customer review quote with star rating',
+    parameters: {
+      type: 'object',
+      properties: {
+        platform: {
+          type: 'string',
+          enum: ['instagram', 'facebook', 'twitter', 'story'],
+          description: 'Target platform (affects aspect ratio)'
+        },
+        style: {
+          type: 'string',
+          enum: ['elegant', 'bold', 'minimal', 'warm'],
+          description: 'Design style for the testimonial graphic'
         }
       }
     }

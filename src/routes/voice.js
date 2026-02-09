@@ -7,64 +7,39 @@ import { BrochureGenerator } from '../services/brochure-generator.js';
 import { CloudflareDeployer } from '../services/cloudflare-deploy.js';
 import { ImageGenerator } from '../services/image-generator.js';
 import { tools as mcpTools } from '../mcp/tools.js';
+import { getStoredTokens } from './youtube-auth.js';
 
-// Convert MCP tools to Gemini function declarations
-function getMcpToolDeclarations() {
-  return mcpTools.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.inputSchema
-  }));
+// MCP tools to expose in restaurant mode (beyond voiceTools)
+const RESTAURANT_MCP_TOOLS = ['create_youtube_short', 'create_website', 'modify_website', 'suggest_google_ads'];
+
+// Get MCP tool declarations for restaurant mode, stripping restaurantId (auto-injected)
+function getRestaurantMcpTools() {
+  return mcpTools
+    .filter(t => RESTAURANT_MCP_TOOLS.includes(t.name))
+    .map(tool => {
+      const params = JSON.parse(JSON.stringify(tool.inputSchema));
+      if (params.properties?.restaurantId) {
+        delete params.properties.restaurantId;
+        if (params.required) {
+          params.required = params.required.filter(r => r !== 'restaurantId');
+        }
+      }
+      return {
+        name: tool.name,
+        description: tool.description,
+        parameters: params
+      };
+    });
 }
 
-// Execute MCP tool
-async function executeMcpTool(name, args) {
+// Execute MCP tool, injecting restaurantId
+async function executeMcpTool(name, args, restaurantId) {
   const tool = mcpTools.find(t => t.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
-  return await tool.handler(args);
+  const mcpArgs = { ...args };
+  if (!mcpArgs.restaurantId && restaurantId) mcpArgs.restaurantId = restaurantId;
+  return await tool.handler(mcpArgs);
 }
-
-// System instruction for general assistant mode (no restaurant context)
-const GENERAL_SYSTEM_INSTRUCTION = `You are a helpful restaurant marketing assistant. You help restaurant owners create websites, generate graphics, manage their online presence, and understand their customer reviews.
-
-CRITICAL: You are speaking out loud to a user. NEVER output internal reasoning, thoughts, or planning. Only speak natural, conversational responses. No asterisks, no "I've determined", no explaining your thought process.
-
-Available tools:
-- find_restaurant: Search for existing restaurants by name
-- create_restaurant: Process a video to extract restaurant data (menu, photos, name, etc.) - requires videoUrl
-- create_website: Generate and deploy a website for a restaurant
-- generate_graphic: Create social media graphics
-- modify_website: Update an existing website with natural language
-- suggest_google_ads: Get Google Ads recommendations
-- create_youtube_short: Process cooking videos into YouTube Shorts - requires videoUrl
-- fetch_reviews: Pull latest reviews from Google Places
-- generate_review_digest: Create AI analysis of reviews with complaints, praise, and actions
-- get_review_insights: Get quick stats like average rating and sentiment
-- get_latest_digest: Get the most recent review digest
-- link_review_platform: Connect a Google Place ID for review tracking
-
-CONVERSATION FLOW:
-1. When user wants to create a website/restaurant, say something like: "Sure! Please upload a video of your restaurant."
-2. When user wants YouTube Shorts, say: "Great, please upload a cooking video."
-3. When you receive "[Video uploaded: /uploads/xxx.mp4]", say "Got it, processing now..." then call the tool
-4. Keep responses SHORT - 1-2 sentences max
-5. When user asks about reviews or feedback, use get_latest_digest or get_review_insights
-
-IMPORTANT: Always ask for the video BEFORE calling tools that need videoUrl. Use phrases like "please upload" to trigger the file picker.
-
-When you see "[Video uploaded: /uploads/abc123.mp4]", use that exact path as the videoUrl parameter and proceed immediately.
-
-RESTAURANT CONTEXT:
-- When you call create_restaurant, it returns a restaurantId. Use that ID for subsequent calls (create_website, generate_graphic, etc.)
-- For returning users who say things like "update my website" or "make me a graphic", use find_restaurant to look up their restaurant by name first
-- If unclear which restaurant, ask: "Which restaurant?"
-
-PROACTIVE REVIEW INSIGHTS:
-- If user asks what they should work on or improve, check their review digest for top complaints
-- If user asks what's going well, mention praise themes from reviews
-- Offer to pull fresh reviews or generate a new digest when discussing customer feedback
-
-Be conversational and BRIEF. This is a voice interface. Never explain what you're thinking - just respond naturally like a human assistant would.`;
 
 /**
  * Setup WebSocket server for voice interactions
@@ -78,29 +53,131 @@ export function setupVoiceWebSocket(server) {
     // Parse query params
     const url = new URL(req.url, `http://${req.headers.host}`);
     const restaurantId = url.searchParams.get('restaurantId');
-    const mode = url.searchParams.get('mode') || 'restaurant'; // 'restaurant' or 'general'
 
-    let restaurant = null;
-    let toolExecutor = null;
-    let useGeneralMode = mode === 'general' || !restaurantId;
-
-    if (!useGeneralMode) {
-      restaurant = RestaurantModel.getFullData(restaurantId);
-      if (!restaurant) {
-        // Fall back to general mode if restaurant not found
-        useGeneralMode = true;
-      } else {
-        // Create tool executor for restaurant-specific mode
-        toolExecutor = new ToolExecutor(restaurantId);
-        toolExecutor.setWebsiteGenerator(new WebsiteGenerator());
-        toolExecutor.setBrochureGenerator(new BrochureGenerator());
-        toolExecutor.setCloudflareDeployer(new CloudflareDeployer());
-        toolExecutor.setImageGenerator(new ImageGenerator({ pro: false }));
-      }
+    if (!restaurantId) {
+      ws.send(JSON.stringify({ type: 'error', error: 'restaurantId required' }));
+      ws.close();
+      return;
     }
+
+    const restaurant = RestaurantModel.getFullData(restaurantId);
+    if (!restaurant) {
+      ws.send(JSON.stringify({ type: 'error', error: 'Restaurant not found' }));
+      ws.close();
+      return;
+    }
+
+    const toolExecutor = new ToolExecutor(restaurantId);
+    toolExecutor.setWebsiteGenerator(new WebsiteGenerator());
+    toolExecutor.setBrochureGenerator(new BrochureGenerator());
+    toolExecutor.setCloudflareDeployer(new CloudflareDeployer());
+    toolExecutor.setImageGenerator(new ImageGenerator({ pro: false }));
 
     // Create Gemini Live client
     let geminiClient = null;
+
+    // Tools that require video input
+    const videoRequiredTools = ['create_youtube_short', 'create_restaurant'];
+
+    // Tools that require YouTube auth for upload
+    const youtubeUploadTools = ['create_youtube_short'];
+
+    // Unified pending request state
+    const pendingRequest = {
+      video: null,  // { callId, toolName, args }
+      auth: null    // { callId, toolName, args }
+    };
+
+    // Strip URLs from tool results before sending to Gemini — UI shows full results
+    function briefResult(result) {
+      if (!result) return { success: true };
+      const brief = { success: true };
+      if (result.title) brief.title = result.title;
+      if (result.variants) brief.variantCount = result.variants.length;
+      if (result.websiteUrl) brief.websiteReady = true;
+      return brief;
+    }
+
+    // Execute a tool, trying toolExecutor first then MCP
+    async function executeTool(toolName, args) {
+      try {
+        return await toolExecutor.execute(toolName, args);
+      } catch (execErr) {
+        if (execErr.message.startsWith('Unknown tool')) {
+          return await executeMcpTool(toolName, args, restaurantId);
+        }
+        throw execErr;
+      }
+    }
+
+    // Handle video upload completion - execute pending tool independently
+    const handleVideoUploaded = async (videoUrl) => {
+      if (!pendingRequest.video) return;
+
+      const { toolName, args } = pendingRequest.video;
+      pendingRequest.video = null;
+      args.videoUrl = videoUrl;
+
+      // Check if YouTube auth is needed before executing
+      if (youtubeUploadTools.includes(toolName)) {
+        const storedTokens = getStoredTokens();
+        if (!storedTokens) {
+          ws.send(JSON.stringify({
+            type: 'requestYouTubeAuth',
+            tool: toolName,
+            message: 'Connect YouTube to upload your Short'
+          }));
+          pendingRequest.auth = { callId: null, toolName, args };
+          return;
+        }
+      }
+
+      ws.send(JSON.stringify({ type: 'toolStarted', tool: toolName, args }));
+
+      try {
+        const result = await executeTool(toolName, args);
+        ws.send(JSON.stringify({ type: 'toolCompleted', tool: toolName, result }));
+        // Notify Gemini so it can comment on the result vocally
+        if (geminiClient && geminiClient.isConnected) {
+          const summary = result?.title ? `Shorts "${result.title}" created and uploaded.` : 'Shorts created and uploaded.';
+          geminiClient.sendText(`[System: ${summary} Let the user know it's done.]`);
+        }
+      } catch (err) {
+        ws.send(JSON.stringify({ type: 'toolError', tool: toolName, error: err.message }));
+      }
+    };
+
+    // Handle YouTube auth completion - resume pending tool
+    const handleAuthComplete = async () => {
+      if (!pendingRequest.auth) return;
+
+      const { callId, toolName, args } = pendingRequest.auth;
+      pendingRequest.auth = null;
+
+      const tokens = getStoredTokens();
+      if (!tokens) {
+        ws.send(JSON.stringify({ type: 'error', error: 'YouTube auth failed' }));
+        if (geminiClient) {
+          geminiClient.sendToolResponse(callId, { name: toolName, response: { error: 'YouTube authentication was not completed' } });
+        }
+        return;
+      }
+
+      ws.send(JSON.stringify({ type: 'toolStarted', tool: toolName, args }));
+
+      try {
+        const result = await executeTool(toolName, args);
+        ws.send(JSON.stringify({ type: 'toolCompleted', tool: toolName, result }));
+        if (geminiClient) {
+          geminiClient.sendToolResponse(callId, { name: toolName, response: briefResult(result) });
+        }
+      } catch (err) {
+        ws.send(JSON.stringify({ type: 'toolError', tool: toolName, error: err.message }));
+        if (geminiClient) {
+          geminiClient.sendToolResponse(callId, { name: toolName, response: { error: err.message } });
+        }
+      }
+    };
 
     // Handle messages from the browser client
     ws.on('message', async (data) => {
@@ -109,17 +186,52 @@ export function setupVoiceWebSocket(server) {
 
         switch (message.type) {
           case 'start':
-            // Choose tools and system instruction based on mode
-            const tools = useGeneralMode ? getMcpToolDeclarations() : voiceTools;
-            const systemInstruction = useGeneralMode
-              ? GENERAL_SYSTEM_INSTRUCTION
-              : createSystemInstruction(restaurant);
+            const tools = [...voiceTools, ...getRestaurantMcpTools()];
+            const systemInstruction = createSystemInstruction(restaurant);
 
             // Initialize Gemini Live connection
             geminiClient = new GeminiLiveClient(
-              restaurantId || 'general',
+              restaurantId,
               tools,
               async (callId, toolName, args) => {
+                // Check if tool needs video and none provided
+                if (videoRequiredTools.includes(toolName) && !args.videoUrl) {
+                  // Show upload widget on client
+                  ws.send(JSON.stringify({
+                    type: 'requestVideoUpload',
+                    tool: toolName
+                  }));
+
+                  // Store pending request - will be executed when video is uploaded
+                  pendingRequest.video = { toolName, args };
+
+                  // Respond to Gemini's tool call so it can speak to the user
+                  geminiClient.sendToolResponse(callId, {
+                    name: toolName,
+                    response: {
+                      status: 'waiting_for_upload',
+                      instruction: 'The user needs to upload a cooking video first. An upload button is now on their screen. Ask them to tap it and upload their video so you can create shorts from it.'
+                    }
+                  });
+
+                  return new Promise(() => {});
+                }
+
+                // Check if tool needs YouTube auth and tokens are missing
+                if (youtubeUploadTools.includes(toolName) && args.videoUrl) {
+                  const storedTokens = getStoredTokens();
+                  if (!storedTokens) {
+                    ws.send(JSON.stringify({
+                      type: 'requestYouTubeAuth',
+                      tool: toolName,
+                      message: 'Connect YouTube to upload your Short'
+                    }));
+
+                    pendingRequest.auth = { callId, toolName, args };
+                    return new Promise(() => {});
+                  }
+                }
+
                 // Notify client that tool is starting (for loading UI)
                 ws.send(JSON.stringify({
                   type: 'toolStarted',
@@ -129,26 +241,13 @@ export function setupVoiceWebSocket(server) {
 
                 let result;
                 try {
-                  if (useGeneralMode) {
-                    result = await executeMcpTool(toolName, args);
-                  } else {
-                    result = await toolExecutor.execute(toolName, args);
-                  }
+                  result = await executeTool(toolName, args);
                 } catch (err) {
-                  ws.send(JSON.stringify({
-                    type: 'toolError',
-                    tool: toolName,
-                    error: err.message
-                  }));
+                  ws.send(JSON.stringify({ type: 'toolError', tool: toolName, error: err.message }));
                   throw err;
                 }
 
-                // Notify browser client of tool completion
-                ws.send(JSON.stringify({
-                  type: 'toolCompleted',
-                  tool: toolName,
-                  result
-                }));
+                ws.send(JSON.stringify({ type: 'toolCompleted', tool: toolName, result }));
                 return result;
               }
             );
@@ -167,6 +266,26 @@ export function setupVoiceWebSocket(server) {
                 type: 'text',
                 text
               }));
+            };
+
+            // Native transcription callbacks (kept for models that support it)
+            geminiClient.onInputTranscript = (text) => {
+              ws.send(JSON.stringify({ type: 'inputTranscript', text }));
+            };
+
+            geminiClient.onOutputTranscript = (text) => {
+              // Filter out control tokens from native audio model (e.g. <ctrl46>)
+              if (text && !text.match(/^<ctrl\d+>$/)) {
+                ws.send(JSON.stringify({ type: 'outputTranscript', text }));
+              }
+            };
+
+            geminiClient.onModelTurnStart = () => {
+              ws.send(JSON.stringify({ type: 'modelTurnStart' }));
+            };
+
+            geminiClient.onTurnComplete = () => {
+              ws.send(JSON.stringify({ type: 'turnComplete' }));
             };
 
             geminiClient.onError = (error) => {
@@ -188,7 +307,7 @@ export function setupVoiceWebSocket(server) {
             ws.send(JSON.stringify({
               type: 'ready',
               message: 'Voice assistant ready',
-              mode: useGeneralMode ? 'general' : 'restaurant'
+              mode: 'restaurant'
             }));
             break;
 
@@ -205,6 +324,18 @@ export function setupVoiceWebSocket(server) {
             if (geminiClient && geminiClient.isConnected) {
               geminiClient.sendText(message.text);
             }
+            break;
+
+          case 'videoUploaded':
+            // Video was uploaded, resume pending tool
+            if (message.videoUrl) {
+              handleVideoUploaded(message.videoUrl);
+            }
+            break;
+
+          case 'youtubeAuthComplete':
+            // YouTube auth completed, resume pending tool
+            handleAuthComplete();
             break;
 
           case 'stop':
