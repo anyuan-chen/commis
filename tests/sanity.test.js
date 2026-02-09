@@ -100,10 +100,11 @@ describe('Models', async () => {
       cuisineType: 'Test'
     });
 
+    const sessionId = `sess_test_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const order = models.OrderModel.create(restaurant.id, {
       items: [{ id: 'test-1', name: 'Test Item', price: 9.99, quantity: 2 }],
       customerEmail: 'test@test.com',
-      stripeSessionId: 'sess_test123'
+      stripeSessionId: sessionId
     });
 
     assert.ok(order.id);
@@ -117,7 +118,7 @@ describe('Models', async () => {
     assert.equal(retrieved.id, order.id);
 
     // Retrieve by session
-    const bySession = models.OrderModel.getByStripeSession('sess_test123');
+    const bySession = models.OrderModel.getByStripeSession(sessionId);
     assert.equal(bySession.id, order.id);
 
     // Update status
@@ -139,7 +140,6 @@ describe('Services', async () => {
     assert.ok(WebsiteGenerator);
     const gen = new WebsiteGenerator();
     assert.ok(typeof gen.generate === 'function');
-    assert.ok(typeof gen.injectAnimations === 'function');
     assert.ok(typeof gen.injectOrderingSystem === 'function');
   });
 
@@ -199,7 +199,7 @@ describe('Services', async () => {
     assert.ok(voiceTools.length > 0);
     assert.ok(typeof createSystemInstruction === 'function');
 
-    const instruction = createSystemInstruction({ name: 'Test', menu: [] });
+    const instruction = createSystemInstruction({ id: 'test-id', name: 'Test', menu: [] });
     assert.ok(instruction.includes('restaurant'));
   });
 });

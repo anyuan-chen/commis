@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { createReadStream, existsSync } from 'fs';
-import { basename } from 'path';
 import { MaterialModel, RestaurantModel } from '../db/models/index.js';
 
 const router = Router();
