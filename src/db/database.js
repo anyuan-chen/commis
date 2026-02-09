@@ -51,8 +51,50 @@ const migrations = [
   // Add ASMR output path column for dual short types
   'ALTER TABLE shorts_jobs ADD COLUMN output_path_asmr TEXT',
   // Add reviews_enabled column for opt-in review aggregation
-  'ALTER TABLE restaurants ADD COLUMN reviews_enabled INTEGER DEFAULT 0'
+  'ALTER TABLE restaurants ADD COLUMN reviews_enabled INTEGER DEFAULT 0',
+  // Add google_place_id for restaurant lookup via Google Places
+  'ALTER TABLE restaurants ADD COLUMN google_place_id TEXT',
+  // Add ASMR YouTube columns for dual upload
+  'ALTER TABLE shorts_jobs ADD COLUMN asmr_youtube_video_id TEXT',
+  'ALTER TABLE shorts_jobs ADD COLUMN asmr_youtube_url TEXT',
+  // Extensible variants column — JSON array of { type, outputPath, youtubeVideoId, youtubeUrl }
+  'ALTER TABLE shorts_jobs ADD COLUMN variants_json TEXT',
+  // Website generation jobs table
+  `CREATE TABLE IF NOT EXISTS website_jobs (
+    id TEXT PRIMARY KEY,
+    restaurant_id TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    progress INTEGER DEFAULT 0,
+    progress_stage TEXT,
+    error_message TEXT,
+    material_id TEXT,
+    output_path TEXT,
+    deployed_url TEXT,
+    use_iterative INTEGER DEFAULT 0,
+    iterations_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+  )`
 ];
+
+// Create indexes (separate from migrations to handle "already exists" gracefully)
+const indexes = [
+  'CREATE INDEX idx_restaurants_place_id ON restaurants(google_place_id)',
+  'CREATE INDEX idx_website_jobs_restaurant ON website_jobs(restaurant_id)',
+  'CREATE INDEX idx_website_jobs_status ON website_jobs(status)'
+];
+
+for (const index of indexes) {
+  try {
+    db.run(index);
+  } catch (err) {
+    // Ignore "already exists" errors
+    if (!err.message.includes('already exists')) {
+      console.error('Index error:', err.message);
+    }
+  }
+}
 
 for (const migration of migrations) {
   try {

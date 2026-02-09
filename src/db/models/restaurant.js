@@ -5,8 +5,8 @@ export const RestaurantModel = {
   create(data = {}) {
     const id = data.id || uuidv4();
     const stmt = db.prepare(`
-      INSERT INTO restaurants (id, name, tagline, description, cuisine_type, address, phone, email, website_url, hours_json, primary_image_path, logo_path, style_theme, primary_color)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO restaurants (id, name, tagline, description, cuisine_type, address, phone, email, website_url, hours_json, primary_image_path, logo_path, style_theme, primary_color, google_place_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -23,7 +23,8 @@ export const RestaurantModel = {
       data.primaryImagePath || null,
       data.logoPath || null,
       data.styleTheme || 'modern',
-      data.primaryColor || '#2563eb'
+      data.primaryColor || '#2563eb',
+      data.googlePlaceId || null
     );
 
     return this.getById(id);
@@ -57,7 +58,8 @@ export const RestaurantModel = {
       primaryImagePath: 'primary_image_path',
       logoPath: 'logo_path',
       styleTheme: 'style_theme',
-      primaryColor: 'primary_color'
+      primaryColor: 'primary_color',
+      googlePlaceId: 'google_place_id'
     };
 
     for (const [key, dbField] of Object.entries(fieldMap)) {
@@ -89,6 +91,31 @@ export const RestaurantModel = {
       ...row,
       hours: row.hours_json ? JSON.parse(row.hours_json) : null
     }));
+  },
+
+  findByPlaceId(placeId) {
+    const stmt = db.prepare('SELECT * FROM restaurants WHERE google_place_id = ?');
+    const row = stmt.get(placeId);
+    if (!row) return null;
+
+    return {
+      ...row,
+      hours: row.hours_json ? JSON.parse(row.hours_json) : null
+    };
+  },
+
+  hasData(id) {
+    const menuCount = db.prepare(`
+      SELECT COUNT(*) as count FROM menu_items mi
+      JOIN menu_categories mc ON mi.category_id = mc.id
+      WHERE mc.restaurant_id = ?
+    `).get(id);
+
+    const photoCount = db.prepare(
+      'SELECT COUNT(*) as count FROM photos WHERE restaurant_id = ?'
+    ).get(id);
+
+    return (menuCount?.count > 0) || (photoCount?.count > 0);
   },
 
   getFullData(id) {

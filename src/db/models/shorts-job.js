@@ -30,6 +30,30 @@ export const ShortsJobModel = {
   },
 
   _parseRow(row) {
+    // Parse variants from JSON, falling back to legacy columns
+    let variants = [];
+    if (row.variants_json) {
+      variants = JSON.parse(row.variants_json);
+    } else {
+      // Backwards compat: build variants from legacy columns
+      if (row.output_path) {
+        variants.push({
+          type: 'narrated',
+          outputPath: row.output_path,
+          youtubeVideoId: row.youtube_video_id || null,
+          youtubeUrl: row.youtube_url || null
+        });
+      }
+      if (row.output_path_asmr) {
+        variants.push({
+          type: 'asmr',
+          outputPath: row.output_path_asmr,
+          youtubeVideoId: row.asmr_youtube_video_id || null,
+          youtubeUrl: row.asmr_youtube_url || null
+        });
+      }
+    }
+
     return {
       id: row.id,
       videoPath: row.video_path,
@@ -50,6 +74,9 @@ export const ShortsJobModel = {
       tags: row.tags_json ? JSON.parse(row.tags_json) : [],
       youtubeVideoId: row.youtube_video_id,
       youtubeUrl: row.youtube_url,
+      asmrYoutubeVideoId: row.asmr_youtube_video_id,
+      asmrYoutubeUrl: row.asmr_youtube_url,
+      variants,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -157,6 +184,59 @@ export const ShortsJobModel = {
       SET youtube_video_id = ?, youtube_url = ?, status = 'uploaded', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(youtubeVideoId, youtubeUrl, id);
+    return this.getById(id);
+  },
+
+  setAsmrYouTubeInfo(id, youtubeVideoId, youtubeUrl) {
+    db.prepare(`
+      UPDATE shorts_jobs
+      SET asmr_youtube_video_id = ?, asmr_youtube_url = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(youtubeVideoId, youtubeUrl, id);
+    return this.getById(id);
+  },
+
+  /**
+   * Add or update a variant in variants_json.
+   * variant: { type: 'narrated'|'asmr'|..., outputPath, youtubeVideoId?, youtubeUrl? }
+   */
+  addVariant(id, variant) {
+    const job = this.getById(id);
+    if (!job) return null;
+    const variants = job.variants.filter(v => v.type !== variant.type);
+    variants.push(variant);
+    db.prepare('UPDATE shorts_jobs SET variants_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(JSON.stringify(variants), id);
+    // Also sync legacy columns for backwards compat
+    if (variant.type === 'narrated' && variant.outputPath) {
+      db.prepare('UPDATE shorts_jobs SET output_path = ? WHERE id = ?').run(variant.outputPath, id);
+    }
+    if (variant.type === 'asmr' && variant.outputPath) {
+      db.prepare('UPDATE shorts_jobs SET output_path_asmr = ? WHERE id = ?').run(variant.outputPath, id);
+    }
+    return this.getById(id);
+  },
+
+  /**
+   * Set YouTube info for a specific variant type
+   */
+  setVariantYouTube(id, type, youtubeVideoId, youtubeUrl) {
+    const job = this.getById(id);
+    if (!job) return null;
+    const variants = job.variants.map(v =>
+      v.type === type ? { ...v, youtubeVideoId, youtubeUrl } : v
+    );
+    db.prepare('UPDATE shorts_jobs SET variants_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(JSON.stringify(variants), id);
+    // Sync legacy columns
+    if (type === 'narrated') {
+      db.prepare('UPDATE shorts_jobs SET youtube_video_id = ?, youtube_url = ?, status = \'uploaded\' WHERE id = ?')
+        .run(youtubeVideoId, youtubeUrl, id);
+    }
+    if (type === 'asmr') {
+      db.prepare('UPDATE shorts_jobs SET asmr_youtube_video_id = ?, asmr_youtube_url = ? WHERE id = ?')
+        .run(youtubeVideoId, youtubeUrl, id);
+    }
     return this.getById(id);
   },
 

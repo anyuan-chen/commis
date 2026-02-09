@@ -122,12 +122,12 @@ export const ReviewModel = {
     }
 
     if (startDate) {
-      sql += ' AND review_date >= ?';
+      sql += ' AND (review_date >= ? OR review_date IS NULL OR review_date = \'\')';
       params.push(startDate);
     }
 
     if (endDate) {
-      sql += ' AND review_date <= ?';
+      sql += ' AND (review_date <= ? OR review_date IS NULL OR review_date = \'\')';
       params.push(endDate);
     }
 
@@ -177,12 +177,12 @@ export const ReviewModel = {
     }
 
     if (startDate) {
-      sql += ' AND review_date >= ?';
+      sql += ' AND (review_date >= ? OR review_date IS NULL OR review_date = \'\')';
       params.push(startDate);
     }
 
     if (endDate) {
-      sql += ' AND review_date <= ?';
+      sql += ' AND (review_date <= ? OR review_date IS NULL OR review_date = \'\')';
       params.push(endDate);
     }
 
