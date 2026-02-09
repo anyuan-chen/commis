@@ -8,13 +8,146 @@ import { analyzeLayout } from './layout-analyzer.js';
 const genAI = new GoogleGenerativeAI(config.geminiApiKey);
 
 /**
+ * Remediation skills - injected into feedback when specific issues are detected
+ * These give the AI actionable patterns to fix common problems
+ */
+const REMEDIATION_SKILLS = {
+  'nav-overflow': {
+    pattern: (issues) => issues.some(i =>
+      i.type === 'layout' &&
+      i.severity === 'error' &&
+      i.message.includes('overflow') &&
+      (i.message.includes('nav') || i.message.includes('ul') || i.message.includes('li'))
+    ),
+    guidance: `
+MOBILE NAVIGATION FIX:
+Your navigation overflows on mobile. Implement a hamburger menu:
+
+CSS:
+.nav-toggle { display: block; background: none; border: none; font-size: 1.5rem; cursor: pointer; padding: 8px; }
+nav ul { display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; flex-direction: column; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+nav ul.open { display: flex; }
+nav li { margin: 0; border-bottom: 1px solid #eee; }
+nav a { display: block; padding: 12px 20px; }
+@media (min-width: 768px) {
+  .nav-toggle { display: none; }
+  nav ul { display: flex; position: static; flex-direction: row; box-shadow: none; }
+  nav li { margin-left: 20px; border: none; }
+}
+
+HTML: Add <button class="nav-toggle" onclick="document.querySelector('nav ul').classList.toggle('open')">☰</button> before the <ul>
+`
+  },
+
+  'touch-targets': {
+    pattern: (issues) => issues.some(i =>
+      i.type === 'layout' &&
+      i.message.includes('too small')
+    ),
+    guidance: `
+TOUCH TARGET FIX:
+Buttons and interactive elements must be at least 44x44px for touch accessibility.
+
+CSS fix:
+button, .btn, a.button, [role="button"] {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 12px 24px;
+}
+
+For icon-only buttons (like close buttons), use:
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+}
+`
+  },
+
+  'text-contrast': {
+    pattern: (issues) => issues.some(i =>
+      (i.type === 'layout' && i.message.includes('contrast')) ||
+      (i.type === 'visual' && i.message.toLowerCase().includes('contrast'))
+    ),
+    guidance: `
+TEXT CONTRAST FIX:
+Text must have sufficient contrast (4.5:1 ratio minimum).
+
+For text on images, always use an overlay:
+.hero { position: relative; }
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.4), rgba(0,0,0,0.7));
+}
+.hero-content { position: relative; z-index: 1; color: white; }
+
+For general text:
+- Light backgrounds (#fff, #f5f5f5): use dark text (#111, #333)
+- Dark backgrounds (#1a1a2e, #111): use light text (#fff, #f5f5f5)
+`
+  },
+
+  'overflow-general': {
+    pattern: (issues) => issues.some(i =>
+      i.type === 'layout' &&
+      i.severity === 'error' &&
+      i.message.includes('overflow') &&
+      !i.message.includes('nav') && !i.message.includes('ul')
+    ),
+    guidance: `
+OVERFLOW FIX:
+Elements are wider than the viewport, causing horizontal scroll.
+
+Common fixes:
+1. Add to your reset: *, *::before, *::after { box-sizing: border-box; }
+2. Constrain containers: .container { max-width: 100%; overflow-x: hidden; }
+3. Make images responsive: img { max-width: 100%; height: auto; }
+4. Check for fixed widths: Replace width: 500px with max-width: 500px; width: 100%;
+5. Flex children: Add min-width: 0 to flex children that might overflow
+`
+  },
+
+  'missing-responsive': {
+    pattern: (issues) => issues.some(i =>
+      i.type === 'static' &&
+      i.message.includes('No media queries')
+    ),
+    guidance: `
+RESPONSIVE DESIGN FIX:
+Add media queries for different screen sizes. Use mobile-first approach:
+
+/* Mobile base styles (default) */
+.container { padding: 16px; }
+.grid { display: flex; flex-direction: column; gap: 16px; }
+
+/* Tablet and up */
+@media (min-width: 768px) {
+  .container { padding: 24px; }
+  .grid { flex-direction: row; flex-wrap: wrap; }
+  .grid > * { flex: 1 1 300px; }
+}
+
+/* Desktop */
+@media (min-width: 1024px) {
+  .container { padding: 32px; max-width: 1200px; margin: 0 auto; }
+}
+`
+  }
+};
+
+/**
  * UI Evaluation Service
  * Takes screenshots of generated HTML and uses AI to evaluate visual quality,
  * providing specific feedback for iterative improvement.
  */
 export class UIEvaluator {
   constructor() {
-    this.model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    this.model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
     this.browser = null;
   }
 
@@ -60,10 +193,13 @@ export class UIEvaluator {
     try {
       for (const vp of viewports) {
         await page.setViewport({ width: vp.width, height: vp.height });
-        await page.setContent(html, { waitUntil: 'networkidle0', timeout: 10000 });
+        await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 10000 });
 
-        // Wait for fonts to load
-        await page.evaluate(() => document.fonts.ready);
+        // Wait briefly for fonts (don't block on external resources)
+        await page.evaluate(() => Promise.race([
+          document.fonts.ready,
+          new Promise(r => setTimeout(r, 2000))
+        ]));
 
         // Run layout analysis while page is rendered (measures actual computed styles)
         const layoutAnalysis = await analyzeLayout(page);
@@ -103,91 +239,54 @@ export class UIEvaluator {
 
   /**
    * Run static HTML/CSS analysis
-   * Checks for common issues without AI
+   * Focused on high-signal checks that indicate real problems
    */
   analyzeStatic(html) {
     const issues = [];
     const warnings = [];
 
-    // Check for basic structure
+    // Critical: DOCTYPE
     if (!html.includes('<!DOCTYPE html>') && !html.includes('<!doctype html>')) {
       issues.push('Missing DOCTYPE declaration');
     }
 
+    // Critical: Viewport meta for mobile
     if (!html.includes('<meta name="viewport"')) {
-      issues.push('Missing viewport meta tag - site may not be mobile responsive');
+      issues.push('Missing viewport meta tag - site will not be mobile responsive');
     }
 
-    if (!html.includes('charset')) {
-      warnings.push('Missing charset declaration');
-    }
-
-    // Check for semantic HTML
-    const hasHeader = html.includes('<header');
-    const hasMain = html.includes('<main');
-    const hasFooter = html.includes('<footer');
-    const hasNav = html.includes('<nav');
-
-    if (!hasHeader && !hasMain && !hasFooter) {
-      warnings.push('Missing semantic HTML structure (header/main/footer)');
-    }
-
-    // Check for accessibility basics
+    // Important: Image accessibility
     const imgTags = html.match(/<img[^>]*>/gi) || [];
     const imgsWithoutAlt = imgTags.filter(img => !img.includes('alt='));
     if (imgsWithoutAlt.length > 0) {
       issues.push(`${imgsWithoutAlt.length} image(s) missing alt attributes`);
     }
 
-    // Check for responsive patterns
+    // Important: Responsive CSS
     const hasMediaQueries = html.includes('@media');
-    const hasFlexbox = html.includes('display: flex') || html.includes('display:flex');
-    const hasGrid = html.includes('display: grid') || html.includes('display:grid');
-
     if (!hasMediaQueries) {
-      issues.push('No media queries found - layout may not be responsive');
+      issues.push('No media queries - layout may break on mobile');
     }
 
-    if (!hasFlexbox && !hasGrid) {
-      warnings.push('No flexbox or grid detected - may have layout issues');
+    // Important: Template errors
+    if (html.includes('>undefined<') || html.includes('>null<')) {
+      issues.push('Template error: "undefined" or "null" rendered in output');
     }
 
-    // Check for color contrast issues (basic)
-    const hasWhiteOnLight = /#fff.*background.*#[ef]/i.test(html) ||
-      /color:\s*white.*background.*#[ef]/i.test(html);
-    if (hasWhiteOnLight) {
-      warnings.push('Potential contrast issue: light text on light background detected');
+    // Warnings: Nice to have
+    const hasSemanticHTML = html.includes('<header') || html.includes('<main') || html.includes('<footer');
+    if (!hasSemanticHTML) {
+      warnings.push('No semantic HTML structure (header/main/footer)');
     }
 
-    // Check for prefers-reduced-motion
-    if (!html.includes('prefers-reduced-motion')) {
-      warnings.push('Missing prefers-reduced-motion support');
-    }
-
-    // Check CSS specifics
-    const hasFontFamily = html.includes('font-family');
-    if (!hasFontFamily) {
-      issues.push('No font-family declarations found');
-    }
-
-    // Check for common broken patterns
-    if (html.includes('undefined') || html.includes('null')) {
-      issues.push('Possible template error: "undefined" or "null" found in output');
-    }
-
-    // Check for z-index issues (z-index without position)
-    const zIndexMatches = html.match(/z-index:\s*\d+/g) || [];
-    if (zIndexMatches.length > 10) {
-      warnings.push('Excessive z-index usage may indicate layering issues');
+    if (!html.includes('charset')) {
+      warnings.push('Missing charset declaration');
     }
 
     return {
       issues,
       warnings,
-      hasSemanticHTML: hasHeader || hasMain || hasFooter,
-      hasResponsivePatterns: hasMediaQueries,
-      hasModernLayout: hasFlexbox || hasGrid,
-      score: Math.max(0, 100 - (issues.length * 15) - (warnings.length * 5))
+      score: Math.max(0, 100 - (issues.length * 20) - (warnings.length * 5))
     };
   }
 
@@ -266,15 +365,123 @@ A score below 6 means it needs significant work before going live.`;
     // Clean up markdown if present
     response = response.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
 
-    return JSON.parse(response);
+    try {
+      return JSON.parse(response);
+    } catch (parseError) {
+      console.error('Failed to parse visual evaluation JSON:', parseError.message);
+      console.error('Raw response:', response.substring(0, 500));
+
+      // Return a fallback evaluation so the system can continue
+      return {
+        scores: {
+          visualHierarchy: { score: 5, issues: ['Unable to parse AI evaluation'] },
+          typography: { score: 5, issues: [] },
+          colorAndContrast: { score: 5, issues: [] },
+          spacing: { score: 5, issues: [] },
+          responsiveness: { score: 5, issues: [] },
+          overallAesthetic: { score: 5, issues: [] }
+        },
+        criticalIssues: ['AI evaluation returned invalid JSON - manual review recommended'],
+        improvements: ['Re-run evaluation or manually review the generated website'],
+        overallScore: 5,
+        passesQualityBar: false,
+        summary: 'Evaluation failed to parse - defaulting to neutral scores'
+      };
+    }
   }
 
   /**
-   * Full evaluation: static analysis + layout analysis + visual evaluation
+   * Deterministic menu completeness check
+   * Compares rendered HTML against DB menu items to find missing/hallucinated content
+   */
+  checkMenuCompleteness(html, restaurantContext) {
+    const menu = restaurantContext.menu || [];
+    if (menu.length === 0) return { missing: [], hallucinated: [], score: 100 };
+
+    // Build list of expected items from DB
+    const expectedItems = [];
+    for (const category of menu) {
+      for (const item of category.items) {
+        expectedItems.push({
+          name: item.name,
+          price: item.price,
+          category: category.name
+        });
+      }
+    }
+
+    // Normalize HTML for searching (collapse whitespace, lowercase)
+    const normalizedHtml = html.replace(/\s+/g, ' ').toLowerCase();
+
+    // Check which items are missing from HTML
+    const missing = [];
+    const found = [];
+    for (const item of expectedItems) {
+      const normalizedName = item.name.toLowerCase().trim();
+      if (normalizedHtml.includes(normalizedName)) {
+        found.push(item);
+      } else {
+        // Try a more lenient match — check without special chars
+        const simpleName = normalizedName.replace(/[^a-z0-9\s]/g, '');
+        if (simpleName.length > 3 && normalizedHtml.includes(simpleName)) {
+          found.push(item);
+        } else {
+          missing.push(item);
+        }
+      }
+    }
+
+    // Check for hallucinated prices: extract all data-price values and compare to DB prices
+    const hallucinated = [];
+    const dbPrices = new Set(expectedItems.map(i => String(i.price)));
+    const dbNames = new Set(expectedItems.map(i => i.name.toLowerCase().trim()));
+    const priceMatches = html.matchAll(/data-name="([^"]*)"[^>]*data-price="([^"]*)"/g);
+    for (const match of priceMatches) {
+      const btnName = match[1].toLowerCase().trim();
+      const btnPrice = match[2];
+      if (!dbNames.has(btnName)) {
+        hallucinated.push({ name: match[1], price: btnPrice, reason: 'item not in database' });
+      }
+    }
+
+    // Check for external image URLs (hallucinated images)
+    const externalImages = [];
+    const imgSrcMatches = html.matchAll(/src="(https?:\/\/[^"]*)"/g);
+    for (const match of imgSrcMatches) {
+      const url = match[1];
+      // Allow Google Fonts, Stripe, and known CDNs for fonts/scripts
+      if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com') ||
+          url.includes('js.stripe.com') || url.includes('cdnjs.cloudflare.com')) continue;
+      externalImages.push(url);
+    }
+
+    const totalExpected = expectedItems.length;
+    const foundCount = found.length;
+    const completenessRatio = totalExpected > 0 ? foundCount / totalExpected : 1;
+    // Penalize for external images and hallucinated items
+    const penalty = Math.min(50, externalImages.length + hallucinated.length * 5);
+    const score = Math.max(0, Math.round(completenessRatio * 100) - penalty);
+
+    return {
+      totalExpected,
+      foundCount,
+      missing,
+      hallucinated,
+      externalImages,
+      score,
+      completenessRatio
+    };
+  }
+
+  /**
+   * Full evaluation: static analysis + layout analysis + visual evaluation + menu completeness
    */
   async evaluate(html, restaurantContext, outputDir = null) {
     // Run static analysis (basic HTML checks)
     const staticAnalysis = this.analyzeStatic(html);
+
+    // Run deterministic menu completeness check
+    const menuCheck = this.checkMenuCompleteness(html, restaurantContext);
 
     // Capture screenshots AND run layout analysis (measures actual rendered layout)
     const { screenshots, layoutAnalysis } = await this.captureScreenshots(html, outputDir);
@@ -285,11 +492,12 @@ A score below 6 means it needs significant work before going live.`;
     // Get mobile layout issues (most important for responsive)
     const mobileLayout = layoutAnalysis.mobile || { score: 100, issues: [] };
 
-    // Combine scores: static (20%) + layout (30%) + visual (50%)
+    // Combine scores: static (15%) + layout (25%) + visual (40%) + menu completeness (20%)
     const combinedScore = Math.round(
-      (staticAnalysis.score * 0.2) +
-      (mobileLayout.score * 0.3) +
-      (visualEval.overallScore * 10 * 0.5)
+      (staticAnalysis.score * 0.15) +
+      (mobileLayout.score * 0.25) +
+      (visualEval.overallScore * 10 * 0.4) +
+      (menuCheck.score * 0.2)
     );
 
     // Collect all layout issues from all viewports
@@ -301,8 +509,37 @@ A score below 6 means it needs significant work before going live.`;
       }))
     );
 
+    // Build menu completeness issues
+    const menuIssues = [];
+    if (menuCheck.missing.length > 0) {
+      const missingNames = menuCheck.missing.map(i => i.name).join(', ');
+      menuIssues.push({
+        type: 'menu',
+        severity: 'error',
+        message: `Missing ${menuCheck.missing.length} of ${menuCheck.totalExpected} menu items: ${missingNames}`
+      });
+    }
+    if (menuCheck.hallucinated.length > 0) {
+      const hallNames = menuCheck.hallucinated.map(i => `${i.name} (${i.reason})`).join(', ');
+      menuIssues.push({
+        type: 'menu',
+        severity: 'error',
+        message: `Hallucinated content: ${hallNames}`
+      });
+    }
+    if (menuCheck.externalImages.length > 0) {
+      menuIssues.push({
+        type: 'menu',
+        severity: 'error',
+        message: `${menuCheck.externalImages.length} external image URLs found (e.g. unsplash.com). Only use provided local photo paths.`
+      });
+    }
+
+    const menuHasErrors = menuCheck.missing.length > 0 || menuCheck.hallucinated.length > 0 || menuCheck.externalImages.length > 0;
+
     return {
       staticAnalysis,
+      menuCheck,
       layoutAnalysis: {
         mobile: mobileLayout,
         tablet: layoutAnalysis.tablet,
@@ -312,8 +549,10 @@ A score below 6 means it needs significant work before going live.`;
       combinedScore,
       passesQualityBar: visualEval.passesQualityBar &&
                         staticAnalysis.issues.length === 0 &&
-                        mobileLayout.issues.filter(i => i.severity === 'error').length === 0,
+                        mobileLayout.issues.filter(i => i.severity === 'error').length === 0 &&
+                        !menuHasErrors,
       allIssues: [
+        ...menuIssues,
         ...staticAnalysis.issues.map(i => ({ type: 'static', severity: 'error', message: i })),
         ...staticAnalysis.warnings.map(w => ({ type: 'static', severity: 'warning', message: w })),
         ...layoutIssues,
@@ -340,181 +579,104 @@ A score below 6 means it needs significant work before going live.`;
     const lines = [];
 
     lines.push('FEEDBACK FROM UI EVALUATION:');
-    lines.push(`Overall Score: ${evaluation.combinedScore}/100 (needs ${evaluation.passesQualityBar ? 'minor' : 'significant'} improvements)`);
+    lines.push(`Overall Score: ${evaluation.combinedScore}/100`);
     lines.push('');
 
+    // PRIORITY 0: Menu completeness (most critical — missing items = broken product)
+    if (evaluation.menuCheck) {
+      const mc = evaluation.menuCheck;
+      if (mc.missing.length > 0) {
+        lines.push(`⚠️ MENU COMPLETENESS ERROR — Missing ${mc.missing.length} of ${mc.totalExpected} menu items.`);
+        lines.push('You MUST include ALL of the following items that are currently missing:');
+        // Group missing items by category for clarity
+        const byCategory = {};
+        for (const item of mc.missing) {
+          if (!byCategory[item.category]) byCategory[item.category] = [];
+          byCategory[item.category].push(item);
+        }
+        for (const [cat, items] of Object.entries(byCategory)) {
+          lines.push(`  ${cat}: ${items.map(i => `${i.name} ($${i.price})`).join(', ')}`);
+        }
+        lines.push('');
+      }
+      if (mc.hallucinated.length > 0) {
+        lines.push('⚠️ HALLUCINATED CONTENT — Remove these items that are NOT in the database:');
+        mc.hallucinated.forEach(h => lines.push(`  - ${h.name}: ${h.reason}`));
+        lines.push('');
+      }
+      if (mc.externalImages?.length > 0) {
+        lines.push(`⚠️ EXTERNAL IMAGES — Remove all ${mc.externalImages.length} external image URLs (unsplash.com, etc).`);
+        lines.push('Only use the local photo paths provided in the PHOTOS section. Do NOT use any https:// image URLs.');
+        lines.push('');
+      }
+    }
+
+    // PRIORITY 1: Layout errors with remediation (most important - causes broken pages)
+    const applicableSkills = this.detectApplicableSkills(evaluation);
+    const layoutSkills = applicableSkills.filter(s =>
+      ['nav-overflow', 'overflow-general', 'touch-targets'].includes(s.name)
+    );
+
+    if (evaluation.layoutAnalysis) {
+      const mobileErrors = evaluation.layoutAnalysis.mobile?.issues?.filter(i => i.severity === 'error') || [];
+
+      if (mobileErrors.length > 0) {
+        lines.push('⚠️ LAYOUT ERRORS - FIX THESE FIRST:');
+        mobileErrors.forEach(issue => {
+          lines.push(`- ${issue.message}`);
+        });
+
+        // Inject relevant skills immediately after the errors they fix
+        if (layoutSkills.length > 0) {
+          lines.push('');
+          lines.push('HOW TO FIX:');
+          layoutSkills.forEach(skill => {
+            lines.push(skill.guidance);
+          });
+        }
+        lines.push('');
+      }
+    }
+
+    // PRIORITY 2: Critical visual issues (brief)
     if (evaluation.visualEvaluation.criticalIssues.length > 0) {
-      lines.push('CRITICAL ISSUES (must fix):');
+      lines.push('VISUAL ISSUES:');
       evaluation.visualEvaluation.criticalIssues.forEach((issue, i) => {
         lines.push(`${i + 1}. ${issue}`);
       });
       lines.push('');
     }
 
-    // Add layout issues from actual rendered measurement
-    if (evaluation.layoutAnalysis) {
-      const mobileErrors = evaluation.layoutAnalysis.mobile?.issues?.filter(i => i.severity === 'error') || [];
-      const mobileWarnings = evaluation.layoutAnalysis.mobile?.issues?.filter(i => i.severity === 'warning') || [];
-
-      if (mobileErrors.length > 0) {
-        lines.push('MOBILE LAYOUT ERRORS (measured from actual render):');
-        mobileErrors.forEach(issue => {
-          lines.push(`- ${issue.message}`);
-        });
-        lines.push('');
-      }
-
-      if (mobileWarnings.length > 0) {
-        lines.push('LAYOUT WARNINGS:');
-        mobileWarnings.slice(0, 5).forEach(issue => {
-          lines.push(`- ${issue.message}`);
-        });
-        lines.push('');
-      }
-    }
-
-    if (evaluation.staticAnalysis.issues.length > 0) {
-      lines.push('TECHNICAL ISSUES:');
-      evaluation.staticAnalysis.issues.forEach((issue, i) => {
-        lines.push(`- ${issue}`);
-      });
-      lines.push('');
-    }
-
-    const lowScoreCategories = Object.entries(evaluation.visualEvaluation.scores)
-      .filter(([_, v]) => v.score < 7)
-      .sort((a, b) => a[1].score - b[1].score);
-
-    if (lowScoreCategories.length > 0) {
-      lines.push('AREAS NEEDING IMPROVEMENT:');
-      lowScoreCategories.forEach(([category, data]) => {
-        lines.push(`\n${category} (score: ${data.score}/10):`);
-        data.issues.forEach(issue => {
-          lines.push(`  - ${issue}`);
-        });
-      });
-      lines.push('');
-    }
-
+    // PRIORITY 3: Specific improvements (actionable)
     if (evaluation.improvements.length > 0) {
-      lines.push('SPECIFIC IMPROVEMENTS TO MAKE:');
-      evaluation.improvements.forEach((imp, i) => {
+      lines.push('IMPROVEMENTS:');
+      evaluation.improvements.slice(0, 2).forEach((imp, i) => {
         lines.push(`${i + 1}. ${imp}`);
       });
+      lines.push('');
     }
+
+    // Skip verbose category breakdowns - they add noise and contradict each other
 
     return lines.join('\n');
   }
-}
 
-/**
- * Design principles and patterns for restaurant websites
- * Used to augment the generation prompt with proven patterns
- */
-export const designPatterns = {
-  hero: {
-    patterns: [
-      'Full-bleed hero image with dark gradient overlay for text legibility',
-      'Split hero: image on one side, compelling copy on the other',
-      'Video background hero with centered logo and tagline',
-      'Parallax hero with layered elements creating depth'
-    ],
-    tips: [
-      'Hero text should be large (min 48px on desktop) with strong contrast',
-      'Include a clear CTA button within the first viewport',
-      'Use backdrop-filter: blur() for text overlays on busy images'
-    ]
-  },
-  typography: {
-    patterns: [
-      'Display font for headings (Playfair Display, Cormorant, DM Serif) + clean sans-serif for body (Inter, DM Sans)',
-      'All-serif elegant approach (Cormorant Garamond) for fine dining',
-      'Modern sans approach (Outfit, Space Grotesk) for casual/trendy',
-      'Script accent font for flourishes (only for decorative elements)'
-    ],
-    tips: [
-      'Body text minimum 16px, ideally 18px for restaurants',
-      'Line height 1.5-1.6 for readability',
-      'Maximum 2-3 font families total',
-      'Use font-weight variations instead of more fonts'
-    ]
-  },
-  colorPalette: {
-    patterns: [
-      'Brand color + neutral (white/black) + one accent',
-      'Warm palette (cream, terracotta, burgundy) for comfort food',
-      'Cool palette (navy, sage, cream) for seafood/modern',
-      'Earthy palette (olive, rust, cream) for farm-to-table'
-    ],
-    tips: [
-      'Ensure 4.5:1 contrast ratio for text',
-      'Use color for hierarchy, not decoration',
-      'Dark mode should be intentional, not default',
-      'Test colors with the restaurant photos'
-    ]
-  },
-  layout: {
-    patterns: [
-      'Generous whitespace (padding: clamp(2rem, 5vw, 6rem))',
-      'Asymmetric grids for visual interest',
-      'Card-based menu layout with hover effects',
-      'Full-width sections alternating with contained content'
-    ],
-    tips: [
-      'Mobile: single column with clear hierarchy',
-      'Tablet: 2-column layouts work well',
-      'Desktop: use max-width containers (1200-1400px)',
-      'Gap > margin for consistent spacing'
-    ]
-  },
-  menu: {
-    patterns: [
-      'Clean list format with prices right-aligned',
-      'Card grid with item images',
-      'Tabbed categories with smooth transitions',
-      'Accordion sections for long menus'
-    ],
-    tips: [
-      'Prices should be easy to scan (align right or use dot leaders)',
-      'Item names should be prominent, descriptions secondary',
-      'Add to cart buttons should be obvious but not overwhelming',
-      'Group items logically (apps, mains, desserts)'
-    ]
+  /**
+   * Detect which remediation skills apply based on evaluation issues
+   */
+  detectApplicableSkills(evaluation) {
+    const allIssues = evaluation.allIssues || [];
+    const applicable = [];
+
+    for (const [name, skill] of Object.entries(REMEDIATION_SKILLS)) {
+      if (skill.pattern(allIssues)) {
+        applicable.push({
+          name,
+          guidance: skill.guidance
+        });
+      }
+    }
+
+    return applicable;
   }
-};
-
-/**
- * Generate a design brief to include in prompts
- */
-export function generateDesignBrief(restaurant) {
-  const vibeMap = {
-    'fine-dining': { typography: 'serif', colors: 'elegant', layout: 'spacious' },
-    'casual': { typography: 'modern-sans', colors: 'warm', layout: 'friendly' },
-    'trendy': { typography: 'display', colors: 'bold', layout: 'asymmetric' },
-    'family': { typography: 'rounded', colors: 'warm', layout: 'clear' },
-    'fast-casual': { typography: 'clean', colors: 'energetic', layout: 'efficient' },
-    'modern': { typography: 'geometric-sans', colors: 'minimal', layout: 'grid' }
-  };
-
-  const vibe = vibeMap[restaurant.style_theme] || vibeMap['modern'];
-
-  return `
-DESIGN BRIEF:
-Restaurant Style: ${restaurant.style_theme || 'modern'}
-Recommended Approach:
-- Typography: ${vibe.typography} approach (see patterns below)
-- Colors: ${vibe.colors} palette extending from brand color ${restaurant.primary_color || '#2563eb'}
-- Layout: ${vibe.layout} structure
-
-PROVEN PATTERNS:
-Hero: ${designPatterns.hero.patterns[Math.floor(Math.random() * designPatterns.hero.patterns.length)]}
-Typography: ${designPatterns.typography.patterns[Math.floor(Math.random() * designPatterns.typography.patterns.length)]}
-Colors: ${designPatterns.colorPalette.patterns[Math.floor(Math.random() * designPatterns.colorPalette.patterns.length)]}
-Menu: ${designPatterns.menu.patterns[Math.floor(Math.random() * designPatterns.menu.patterns.length)]}
-
-KEY TIPS:
-${designPatterns.typography.tips.slice(0, 2).map(t => `- ${t}`).join('\n')}
-${designPatterns.layout.tips.slice(0, 2).map(t => `- ${t}`).join('\n')}
-${designPatterns.colorPalette.tips.slice(0, 2).map(t => `- ${t}`).join('\n')}
-`;
 }

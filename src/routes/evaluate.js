@@ -63,7 +63,7 @@ router.post('/:restaurantId/screenshot', async (req, res) => {
     const html = await fs.readFile(htmlPath, 'utf-8');
 
     const screenshotDir = join(websitePath, 'screenshots', page);
-    const screenshots = await evaluator.captureScreenshots(html, screenshotDir);
+    const { screenshots } = await evaluator.captureScreenshots(html, screenshotDir);
 
     res.json({
       restaurantId,
